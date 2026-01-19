@@ -1,0 +1,90 @@
+{
+  "name": "ISO",
+  "description": "ISO 105-key layout (European physical standard)",
+  "source": "ISO/IEC 9995-2",
+  "rows": [
+    {
+      "keys": [
+        { "code": "Backquote", "iso": "E00", "width": 1 },
+        { "code": "Digit1", "iso": "E01", "width": 1 },
+        { "code": "Digit2", "iso": "E02", "width": 1 },
+        { "code": "Digit3", "iso": "E03", "width": 1 },
+        { "code": "Digit4", "iso": "E04", "width": 1 },
+        { "code": "Digit5", "iso": "E05", "width": 1 },
+        { "code": "Digit6", "iso": "E06", "width": 1 },
+        { "code": "Digit7", "iso": "E07", "width": 1 },
+        { "code": "Digit8", "iso": "E08", "width": 1 },
+        { "code": "Digit9", "iso": "E09", "width": 1 },
+        { "code": "Digit0", "iso": "E10", "width": 1 },
+        { "code": "Minus", "iso": "E11", "width": 1 },
+        { "code": "Equal", "iso": "E12", "width": 1 },
+        { "code": "Backspace", "iso": "E13", "width": 2 }
+      ]
+    },
+    {
+      "keys": [
+        { "code": "Tab", "iso": "D00", "width": 1.5 },
+        { "code": "KeyQ", "iso": "D01", "width": 1 },
+        { "code": "KeyW", "iso": "D02", "width": 1 },
+        { "code": "KeyE", "iso": "D03", "width": 1 },
+        { "code": "KeyR", "iso": "D04", "width": 1 },
+        { "code": "KeyT", "iso": "D05", "width": 1 },
+        { "code": "KeyY", "iso": "D06", "width": 1 },
+        { "code": "KeyU", "iso": "D07", "width": 1 },
+        { "code": "KeyI", "iso": "D08", "width": 1 },
+        { "code": "KeyO", "iso": "D09", "width": 1 },
+        { "code": "KeyP", "iso": "D10", "width": 1 },
+        { "code": "BracketLeft", "iso": "D11", "width": 1 },
+        { "code": "BracketRight", "iso": "D12", "width": 1 },
+        { "code": "Enter", "iso": "D13", "width": 1.5, "isoEnterTop": true }
+      ]
+    },
+    {
+      "keys": [
+        { "code": "CapsLock", "iso": "C00", "width": 1.75 },
+        { "code": "KeyA", "iso": "C01", "width": 1 },
+        { "code": "KeyS", "iso": "C02", "width": 1 },
+        { "code": "KeyD", "iso": "C03", "width": 1 },
+        { "code": "KeyF", "iso": "C04", "width": 1 },
+        { "code": "KeyG", "iso": "C05", "width": 1 },
+        { "code": "KeyH", "iso": "C06", "width": 1 },
+        { "code": "KeyJ", "iso": "C07", "width": 1 },
+        { "code": "KeyK", "iso": "C08", "width": 1 },
+        { "code": "KeyL", "iso": "C09", "width": 1 },
+        { "code": "Semicolon", "iso": "C10", "width": 1 },
+        { "code": "Quote", "iso": "C11", "width": 1 },
+        { "code": "Backslash", "iso": "C12", "width": 1 },
+        { "code": "Enter", "iso": "C13", "width": 1.25, "isoEnterBottom": true }
+      ]
+    },
+    {
+      "keys": [
+        { "code": "ShiftLeft", "iso": "B99", "width": 1.25, "modifier": "shift" },
+        { "code": "IntlBackslash", "iso": "B00", "width": 1 },
+        { "code": "KeyZ", "iso": "B01", "width": 1 },
+        { "code": "KeyX", "iso": "B02", "width": 1 },
+        { "code": "KeyC", "iso": "B03", "width": 1 },
+        { "code": "KeyV", "iso": "B04", "width": 1 },
+        { "code": "KeyB", "iso": "B05", "width": 1 },
+        { "code": "KeyN", "iso": "B06", "width": 1 },
+        { "code": "KeyM", "iso": "B07", "width": 1 },
+        { "code": "Comma", "iso": "B08", "width": 1 },
+        { "code": "Period", "iso": "B09", "width": 1 },
+        { "code": "Slash", "iso": "B10", "width": 1 },
+        { "code": "ShiftRight", "iso": "B11", "width": 2.75, "modifier": "shift" }
+      ]
+    },
+    {
+      "keys": [
+        { "code": "ControlLeft", "iso": "A00", "width": 1.25, "modifier": "ctrl" },
+        { "code": "MetaLeft", "iso": "A01", "width": 1.25, "modifier": "meta" },
+        { "code": "AltLeft", "iso": "A02", "width": 1.25, "modifier": "alt" },
+        { "code": "Space", "iso": "A03", "width": 6.25 },
+        { "code": "AltRight", "iso": "A04", "width": 1.25, "modifier": "altgr" },
+        { "code": "MetaRight", "iso": "A05", "width": 1.25, "modifier": "meta" },
+        { "code": "ContextMenu", "iso": "A06", "width": 1.25 },
+        { "code": "ControlRight", "iso": "A07", "width": 1.25, "modifier": "ctrl" }
+      ]
+    }
+  ]
+}
