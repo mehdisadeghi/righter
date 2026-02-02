@@ -1,6 +1,6 @@
 <script>
 	import { onMount, tick } from 'svelte';
-	import { t, detectLanguage, getDirection, supportedLanguages } from '$lib/i18n.js';
+	import { t, getDirection, supportedLanguages } from '$lib/i18n.js';
 	import { getRandomTextItem, getTextMeta } from '$lib/texts.js';
 	import { buildKeyboard, languageMappings, keyboardGroups, isRTL } from '$lib/keyboards/index.js';
 	import {
@@ -10,22 +10,13 @@
 		updateSettings,
 		exportData,
 		importData,
-		clearHistory
+		clearHistory,
+		resetSettings
 	} from '$lib/storage.js';
 
 	const MODES = {
-		time: [
-			{ value: 15, label: '15s' },
-			{ value: 30, label: '30s' },
-			{ value: 60, label: '60s' },
-			{ value: 120, label: '2m' }
-		],
-		text: [
-			{ value: 1, label: '1' },
-			{ value: 3, label: '3' },
-			{ value: 5, label: '5' },
-			{ value: 10, label: '10' }
-		]
+		time: [15, 30, 60, 120],
+		text: [1, 3, 5, 10]
 	};
 
 	let data = $state({
@@ -54,20 +45,43 @@
 	let laneSpawnInterval = $state(null);
 	const LANE_POOL_SIZE = 15;
 
+	// Settings panel toggle
+	let showMoreSettings = $state(false);
+
 	// Keyboard tracking
 	let pressedKeys = $state(new Set());
 	let modifiers = $state({ shift: false, ctrl: false, alt: false, altgr: false, meta: false });
 	let layoutMismatch = $state(false);
 	let mismatchTimeout = $state(null);
 
-	let uiLang = $derived(data.settings.uiLanguage || 'en');
 	let keyboardLocale = $derived(data.settings.keyboardLocale || 'en-US');
 	let physicalLayout = $derived(data.settings.physicalLayout || 'ansi');
 	let modeType = $derived(data.settings.modeType || 'time');
 	let modeValue = $derived(data.settings.modeValue || 30);
-	let showTyped = $derived(data.settings.showTyped || false);
+	let errorReplace = $derived(data.settings.errorReplace || false);
 	let keyboard = $derived(buildKeyboard(physicalLayout, keyboardLocale));
 	let keyboardMapping = $derived(languageMappings[keyboardLocale]);
+
+	// Map keyboard locale to UI language (with fallbacks)
+	const keyboardToUiLang = {
+		'en-US': 'en',
+		'de-DE': 'de',
+		'es-ES': 'es',
+		'fa-IR': 'fa',
+		'eurkey': 'en',
+		'ar': 'ar',
+		'ur-PK': 'ur',
+		'ps-AF': 'ps',
+		'ckb': 'ckb',
+		'sd-PK': 'sd',
+		'ug': 'ug',
+		'pa-Arab': 'pa',
+		'ks': 'ks',
+		'prs': 'fa'
+	};
+	let langOverride = $derived(data.settings.langOverride || '');
+	let autoUiLang = $derived(keyboardToUiLang[keyboardLocale] || (isRTL(keyboardLocale) ? 'fa' : 'en'));
+	let uiLang = $derived(langOverride || autoUiLang);
 	let tr = $derived(t(uiLang));
 	let uiDir = $derived(getDirection(uiLang));
 	let textDir = $derived(isRTL(keyboardLocale) ? 'rtl' : 'ltr');
@@ -409,8 +423,15 @@
 	}
 
 	function handleClearHistory() {
-		if (confirm('Clear all history?')) {
+		if (confirm(tr('confirmClearHistory'))) {
 			data = clearHistory();
+		}
+	}
+
+	function handleResetSettings() {
+		if (confirm(tr('confirmResetSettings'))) {
+			data = resetSettings();
+			loadNewText();
 		}
 	}
 
@@ -440,6 +461,9 @@
 	}
 
 	const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+	const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+	const persianNumeralLangs = ['fa', 'ur', 'ps', 'ckb', 'sd', 'ug', 'pa', 'ks'];
+	const arabicNumeralLangs = ['ar'];
 
 	// Check if character belongs to Arabic script (Arabic, Persian, Urdu, etc.)
 	function isArabicScript(char) {
@@ -476,20 +500,36 @@
 		}, 150);
 	}
 
-	function toLocalDigits(num) {
-		if (uiLang !== 'fa') return String(num);
-		return String(num).replace(/[0-9]/g, (d) => persianDigits[d]);
+	function formatNumber(num) {
+		const str = String(num);
+		if (persianNumeralLangs.includes(uiLang)) {
+			return str.replace(/[0-9]/g, (d) => persianDigits[d]);
+		}
+		if (arabicNumeralLangs.includes(uiLang)) {
+			return str.replace(/[0-9]/g, (d) => arabicDigits[d]);
+		}
+		return str;
+	}
+
+	function formatPercent(num) {
+		const rtlLangs = [...persianNumeralLangs, ...arabicNumeralLangs];
+		const pct = rtlLangs.includes(uiLang) ? '٪' : '%';
+		return formatNumber(num) + pct;
 	}
 
 	function formatTime(seconds) {
 		const m = Math.floor(seconds / 60);
 		const s = seconds % 60;
-		const timeStr = m > 0 ? `${m}:${s.toString().padStart(2, '0')}` : `${s}s`;
-		return uiLang === 'fa' ? timeStr.replace(/[0-9]/g, (d) => persianDigits[d]) : timeStr;
+		if (m > 0) {
+			return formatNumber(m) + ':' + formatNumber(s.toString().padStart(2, '0'));
+		}
+		return formatNumber(s);
 	}
 
 	function formatDate(timestamp) {
-		return new Date(timestamp).toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US', {
+		const rtlLangs = [...persianNumeralLangs, ...arabicNumeralLangs];
+		const locale = rtlLangs.includes(uiLang) ? uiLang : 'en-US';
+		return new Date(timestamp).toLocaleDateString(locale, {
 			month: 'short',
 			day: 'numeric',
 			hour: '2-digit',
@@ -699,36 +739,7 @@
 	</div>
 
 	<header class="header">
-		<div class="settings-inline">
-			<button
-				class="mode-btn"
-				class:active={modeType === 'time'}
-				onclick={() => changeSetting('modeType', 'time')}
-			>
-				{tr('time')}
-			</button>
-			<button
-				class="mode-btn"
-				class:active={modeType === 'text'}
-				onclick={() => changeSetting('modeType', 'text')}
-			>
-				{tr('texts')}
-			</button>
-
-			<span class="separator">|</span>
-
-			{#each MODES[modeType] as mode}
-				<button
-					class="mode-btn"
-					class:active={modeValue === mode.value}
-					onclick={() => changeSetting('modeValue', mode.value)}
-				>
-					{mode.label}
-				</button>
-			{/each}
-
-			<span class="separator">|</span>
-
+		<div class="settings-row">
 			<button
 				class="mode-btn"
 				class:active={physicalLayout === 'ansi'}
@@ -744,8 +755,6 @@
 				ISO
 			</button>
 
-			<span class="separator">|</span>
-
 			<select
 				class="keyboard-select"
 				value={keyboardLocale}
@@ -760,62 +769,115 @@
 				{/each}
 			</select>
 
-			<span class="separator">|</span>
-
-			<label class="inline-setting">
-				<span class="setting-icon">A</span>
-				<input
-					type="range"
-					min="0.875"
-					max="2"
-					step="0.125"
-					value={data.settings.fontSize}
-					oninput={(e) => changeSetting('fontSize', parseFloat(e.target.value))}
-				/>
-			</label>
-
-			<label class="color-picker">
-				<input
-					type="color"
-					value={hueToHex(data.settings.hue)}
-					oninput={(e) => changeSetting('hue', hexToHue(e.target.value))}
-				/>
-			</label>
-
-			<span class="separator">|</span>
-
 			<button
-				class="mode-btn"
-				class:active={showTyped}
-				onclick={() => changeSetting('showTyped', !showTyped)}
-				title="Show typed characters"
+				class="mode-btn more-toggle"
+				onclick={() => showMoreSettings = !showMoreSettings}
+				title="More settings"
 			>
-				{showTyped ? 'ABC' : 'abc'}
+				<span class="toggle-arrow" class:open={showMoreSettings} class:rtl={uiDir === 'rtl'}>›</span>
 			</button>
-
-			<span class="separator">|</span>
-
-			<button class="mode-btn" onclick={handleExport}>{tr('export')}</button>
-			<button class="mode-btn" onclick={handleImport}>{tr('import')}</button>
 		</div>
+
+		<fieldset class="settings-panel" class:open={showMoreSettings}>
+			<legend>{tr('settings')}</legend>
+			<div class="settings-content">
+				<label class="setting-item">
+					<span class="setting-label">{tr('mode')}</span>
+					<select
+						class="setting-select"
+						value={modeType}
+						onchange={(e) => changeSetting('modeType', e.target.value)}
+					>
+						<option value="time">{tr('time')}</option>
+						<option value="text">{tr('texts')}</option>
+					</select>
+					<select
+						class="setting-select"
+						value={modeValue}
+						onchange={(e) => changeSetting('modeValue', parseInt(e.target.value))}
+					>
+						{#each MODES[modeType] as value}
+							<option value={value}>
+								{#if modeType === 'time'}
+									{value >= 60 ? formatNumber(value / 60) + tr('min') : formatNumber(value) + tr('sec')}
+								{:else}
+									{formatNumber(value)}
+								{/if}
+							</option>
+						{/each}
+					</select>
+				</label>
+
+				<label class="setting-item" title={tr('fontSizeTooltip')}>
+					<span class="setting-label">{tr('fontSize')}</span>
+					<input
+						type="range"
+						min="0.875"
+						max="2"
+						step="0.125"
+						value={data.settings.fontSize}
+						oninput={(e) => changeSetting('fontSize', parseFloat(e.target.value))}
+					/>
+				</label>
+
+				<label class="setting-item" title={tr('colorTooltip')}>
+					<span class="setting-label">{tr('color')}</span>
+					<input
+						type="color"
+						value={hueToHex(data.settings.hue)}
+						oninput={(e) => changeSetting('hue', hexToHue(e.target.value))}
+					/>
+				</label>
+
+				<label class="setting-item">
+					<span class="setting-label">{tr('errorReplace')}</span>
+					<input
+						type="checkbox"
+						checked={errorReplace}
+						onchange={(e) => changeSetting('errorReplace', e.target.checked)}
+					/>
+				</label>
+
+				<label class="setting-item" title={tr('langOverride')}>
+					<span class="setting-label">{tr('language')}</span>
+					<select
+						class="setting-select"
+						value={langOverride}
+						onchange={(e) => changeSetting('langOverride', e.target.value)}
+					>
+						<option value="">{tr('auto')}</option>
+						{#each supportedLanguages as l}
+							<option value={l.code}>{l.nativeName}</option>
+						{/each}
+					</select>
+				</label>
+
+				<div class="setting-item">
+					<span class="setting-label">{tr('data')}</span>
+					<button class="setting-btn" onclick={handleExport}>{tr('export')}</button>
+					<button class="setting-btn" onclick={handleImport}>{tr('import')}</button>
+					<button class="setting-btn reset-btn" onclick={handleResetSettings}>{uiDir === 'rtl' ? 'ریسیت' : 'reset'}</button>
+				</div>
+			</div>
+		</fieldset>
 	</header>
 
 	<div class="metrics-bar">
 		<div class="metric">
-			<span class="metric-value">{toLocalDigits(wpm)}</span>
+			<span class="metric-value">{formatNumber(wpm)}</span>
 			<span class="metric-label">{tr('wpm')}</span>
 		</div>
 		<div class="metric">
-			<span class="metric-value">{toLocalDigits(accuracy)}{uiLang === 'fa' ? '٪' : '%'}</span>
+			<span class="metric-value">{formatPercent(accuracy)}</span>
 			<span class="metric-label">{tr('accuracy')}</span>
 		</div>
 		<div class="metric">
-			<span class="metric-value">{formatTime(displayTime)}</span>
+			<span class="metric-value">{formatTime(displayTime)}<sup class="metric-unit">{tr('sec')}</sup></span>
 			<span class="metric-label">{tr('time')}</span>
 		</div>
 		<div class="metric">
-			<span class="metric-value">{toLocalDigits(progress)}{uiLang === 'fa' ? '٪' : '%'}</span>
-			<span class="metric-label">{toLocalDigits(remainingChars)}</span>
+			<span class="metric-value">{formatPercent(progress)}</span>
+			<span class="metric-label">{formatNumber(remainingChars)}</span>
 		</div>
 	</div>
 
@@ -830,15 +892,9 @@
 						{@const isZeroWidth = char === '\u200C' || char === '\u200B' || char === '\u200D'}
 						{@const globalIdx = linePositions[lineIdx].start + charIdx}
 						{@const typedChar = globalIdx < userInput.length ? userInput[globalIdx] : null}
-						{@const showTypedChar = showTyped && typedChar !== null && typedChar !== char}
-						<span class="char {lineCharStates[lineIdx]?.[charIdx] || 'pending'}" class:zw={isZeroWidth} class:has-typed={showTypedChar}>
-							{#if showTypedChar}
-								<span class="typed-char">{typedChar}</span>
-								<span class="original-char">{char}</span>
-							{:else}
-								{char}
-							{/if}
-						</span>
+						{@const isError = typedChar !== null && typedChar !== char}
+						{@const displayChar = (isError && errorReplace) ? typedChar : char}
+						<span class="char {lineCharStates[lineIdx]?.[charIdx] || 'pending'}" class:zw={isZeroWidth}>{displayChar}</span>
 					{/each}
 					{#if line.length === 0}
 						<span class="char pending">&nbsp;</span>
@@ -890,7 +946,7 @@
 	<div class="input-area">
 		{#if isComplete}
 			<div class="complete-message">
-				<p>{tr('raceComplete')} {toLocalDigits(wpm)} {tr('wpm')}, {toLocalDigits(accuracy)}{uiLang === 'fa' ? '٪' : '%'}</p>
+				<p>{tr('raceComplete')} {formatNumber(wpm)} {tr('wpm')}, {formatPercent(accuracy)}</p>
 				<p class="hint">{tr('pressEnter')}</p>
 			</div>
 		{/if}
@@ -918,7 +974,7 @@
 	</div>
 
 	<details class="history-panel">
-		<summary>{tr('history')} ({toLocalDigits(data.history.length)})</summary>
+		<summary>{tr('history')} ({formatNumber(data.history.length)})</summary>
 		{#if data.history.length === 0}
 			<p>{tr('noHistory')}</p>
 		{:else}
@@ -926,30 +982,16 @@
 				{#each data.history.slice(0, 20) as race}
 					<li class="history-item">
 						<span>{formatDate(race.timestamp)}</span>
-						<span>{toLocalDigits(race.wpm)} {tr('wpm')}</span>
-						<span>{toLocalDigits(race.accuracy)}{uiLang === 'fa' ? '٪' : '%'}</span>
+						<span>{formatNumber(race.wpm)} {tr('wpm')}</span>
+						<span>{formatPercent(race.accuracy)}</span>
 					</li>
 				{/each}
 			</ul>
-			<button class="btn-small" onclick={handleClearHistory}>Clear</button>
+			<button class="btn-small" onclick={handleClearHistory}>{tr('clear')}</button>
 		{/if}
 	</details>
 
-	<div class="lang-selector">
-		<svg class="globe-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-			<circle cx="12" cy="12" r="10"/>
-			<path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-		</svg>
-		<select
-			value={uiLang}
-			onchange={(e) => changeSetting('uiLanguage', e.target.value)}
-		>
-			{#each supportedLanguages as l}
-				<option value={l.code}>{l.nativeName}</option>
-			{/each}
-		</select>
 	</div>
-</div>
 
 <style>
 	/* Background lanes - space invaders parallax effect */
@@ -985,47 +1027,159 @@
 		to { transform: translateX(100vw); }
 	}
 
-	.lang-selector {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-		direction: ltr;
-	}
-
-	.globe-icon {
-		width: 1rem;
-		height: 1rem;
-		color: var(--text-muted);
-	}
-
-	.lang-selector select {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text);
-		cursor: pointer;
-	}
-
-	.lang-selector select:hover {
-		background: var(--border);
-	}
-
 	.header {
 		display: flex;
-		justify-content: flex-start;
-		align-items: center;
-		gap: 1rem;
-		flex-wrap: wrap;
+		flex-direction: column;
+		gap: 0;
+		overflow: hidden;
 	}
 
-	.settings-inline {
+	.settings-row {
 		display: flex;
 		align-items: center;
 		gap: 0.375rem;
 		flex-wrap: wrap;
+	}
+
+	.settings-panel {
+		max-height: 0;
+		overflow: hidden;
+		opacity: 0;
+		transition: max-height 0.25s ease-out, opacity 0.2s ease-out, margin-top 0.25s ease-out, padding 0.25s ease-out;
+		margin: 0;
+		padding: 0;
+		border: 1px solid transparent;
+		border-radius: 0.25rem;
+	}
+
+	.settings-panel.open {
+		max-height: 10rem;
+		opacity: 1;
+		margin-top: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		border-color: var(--border);
+	}
+
+	.settings-panel legend {
+		font-size: 0.625rem;
+		color: var(--text-muted);
+		padding: 0 0.25rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.settings-content {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.5rem;
+		max-width: 100%;
+	}
+
+	.setting-item {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+	}
+
+	.setting-label {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+	}
+
+	.setting-select {
+		padding: 0.25rem 0.5rem;
+		font-family: inherit;
+		font-size: 0.75rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.setting-select option {
+		unicode-bidi: plaintext;
+		direction: ltr;
+	}
+
+	.setting-btn {
+		padding: 0.25rem 0.5rem;
+		font-family: inherit;
+		font-size: 0.75rem;
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.setting-btn:hover {
+		background: var(--border);
+	}
+
+	.setting-btn.reset-btn {
+		color: var(--error);
+		border-color: hsla(0, 45%, 45%, 0.3);
+	}
+
+	.setting-btn.reset-btn:hover {
+		background: hsla(0, 45%, 45%, 0.1);
+	}
+
+	.setting-item input[type="range"] {
+		width: 4rem;
+		cursor: pointer;
+	}
+
+	.setting-item input[type="color"] {
+		width: 1.25rem;
+		height: 1.25rem;
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: 50%;
+		cursor: pointer;
+		background: none;
+		-webkit-appearance: none;
+		appearance: none;
+	}
+
+	.setting-item input[type="color"]::-webkit-color-swatch-wrapper {
+		padding: 0;
+	}
+
+	.setting-item input[type="color"]::-webkit-color-swatch {
+		border: none;
+		border-radius: 50%;
+	}
+
+	.setting-item input[type="color"]::-moz-color-swatch {
+		border: none;
+		border-radius: 50%;
+	}
+
+	.setting-item input[type="checkbox"] {
+		cursor: pointer;
+	}
+
+	.toggle-arrow {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1rem;
+		height: 1rem;
+		transition: transform 0.25s ease-out;
+		transform: rotate(0deg);
+		font-size: 1rem;
+		line-height: 1;
+	}
+
+	.toggle-arrow.open {
+		transform: rotate(90deg);
+	}
+
+	.toggle-arrow.rtl.open {
+		transform: rotate(-90deg);
 	}
 
 	.mode-btn {
@@ -1045,6 +1199,11 @@
 		border-color: var(--text);
 	}
 
+	.mode-btn.more-toggle {
+		min-width: 1.5rem;
+		padding: 0.25rem 0.4rem;
+	}
+
 	.keyboard-select {
 		padding: 0.25rem 0.5rem;
 		font-family: inherit;
@@ -1054,68 +1213,17 @@
 		border-radius: 0.25rem;
 		color: var(--text-muted);
 		cursor: pointer;
+		unicode-bidi: plaintext;
+	}
+
+	.keyboard-select option,
+	.keyboard-select optgroup {
+		unicode-bidi: plaintext;
+		direction: ltr;
 	}
 
 	.keyboard-select:focus {
 		outline: 1px solid var(--text-muted);
-	}
-
-	.separator {
-		color: var(--border);
-		margin: 0 0.125rem;
-	}
-
-	.inline-setting {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.inline-setting input[type="range"] {
-		width: 3rem;
-		cursor: pointer;
-	}
-
-	.setting-icon {
-		width: 1rem;
-		height: 1rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 0.625rem;
-		font-weight: 600;
-		border-radius: 0.125rem;
-	}
-
-	.color-picker {
-		display: flex;
-		align-items: center;
-	}
-
-	.color-picker input[type="color"] {
-		width: 1.25rem;
-		height: 1.25rem;
-		padding: 0;
-		border: 1px solid var(--border);
-		border-radius: 50%;
-		cursor: pointer;
-		background: none;
-		-webkit-appearance: none;
-		appearance: none;
-	}
-
-	.color-picker input[type="color"]::-webkit-color-swatch-wrapper {
-		padding: 0;
-	}
-
-	.color-picker input[type="color"]::-webkit-color-swatch {
-		border: none;
-		border-radius: 50%;
-	}
-
-	.color-picker input[type="color"]::-moz-color-swatch {
-		border: none;
-		border-radius: 50%;
 	}
 
 	.btn-small {
@@ -1141,6 +1249,7 @@
 		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
+		font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
 	}
 
 	.metric {
@@ -1151,10 +1260,16 @@
 	}
 
 	.metric-value {
-		font-family: var(--font-family-mono);
 		font-size: 1.25rem;
 		font-weight: 600;
 		line-height: 1.2;
+	}
+
+	.metric-unit {
+		font-size: 0.5em;
+		font-weight: 400;
+		opacity: 0.7;
+		margin-inline-start: 0.1em;
 	}
 
 	.metric-label {
@@ -1290,24 +1405,6 @@
 		color: var(--pending);
 	}
 
-	.char.has-typed {
-		position: relative;
-		display: inline-flex;
-		flex-direction: column;
-		align-items: center;
-		line-height: 1.2;
-	}
-
-	.typed-char {
-		display: block;
-	}
-
-	.original-char {
-		display: block;
-		font-size: 0.5em;
-		opacity: 0.4;
-		line-height: 1;
-	}
 
 	.keyboard {
 		display: flex;

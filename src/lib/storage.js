@@ -1,12 +1,19 @@
 const STORAGE_KEY = 'righter_data';
 
+const defaultSettings = {
+	uiLanguage: 'en',
+	keyboardLocale: 'en-US',
+	fontSize: 1.25,
+	hue: 220,
+	modeType: 'time',
+	modeValue: 30,
+	physicalLayout: 'ansi',
+	errorReplace: false,
+	langOverride: ''
+};
+
 const defaultData = {
-	settings: {
-		language: null,
-		fontSize: 1.25,
-		hue: 220,
-		difficulty: 'easy'
-	},
+	settings: { ...defaultSettings },
 	history: [],
 	customTexts: {
 		fa: '',
@@ -87,6 +94,13 @@ export function updateCustomText(lang, text) {
 export function clearHistory() {
 	const data = loadData();
 	data.history = [];
+	saveData(data);
+	return data;
+}
+
+export function resetSettings() {
+	const data = loadData();
+	data.settings = { ...defaultSettings };
 	saveData(data);
 	return data;
 }
