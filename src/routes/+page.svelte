@@ -47,6 +47,13 @@
 	let now = $state(Date.now());
 	let scrollOffset = $state(0);
 
+	// Background lanes (space invaders parallax effect)
+	let backgroundLanes = $state([]);
+	let laneIdCounter = $state(0);
+	let lastSpawnedLineIndex = $state(-1);
+	let laneSpawnInterval = $state(null);
+	const LANE_POOL_SIZE = 15;
+
 	// Keyboard tracking
 	let pressedKeys = $state(new Set());
 	let modifiers = $state({ shift: false, ctrl: false, alt: false, altgr: false, meta: false });
@@ -352,7 +359,16 @@
 		startTime = null;
 		endTime = null;
 		isComplete = false;
+		lastSpawnedLineIndex = 0;
 		await tick();
+		// Spawn initial background lanes and start continuous spawner
+		const firstLine = targetText.split('\n')[0];
+		if (firstLine?.trim()) {
+			for (let i = 0; i < 5; i++) {
+				spawnLane(firstLine, textDir);
+			}
+		}
+		startLaneSpawner();
 		inputElement?.focus();
 	}
 
@@ -524,7 +540,10 @@
 		}
 		await loadNewText();
 
-		return () => stopTimer();
+		return () => {
+			stopTimer();
+			stopLaneSpawner();
+		};
 	});
 
 	// Focus input after render
@@ -584,6 +603,73 @@
 			requestAnimationFrame(updateScrollOffset);
 		});
 	});
+
+	// Spawn a single background lane with extreme diversity (log-normal-like distribution)
+	function spawnLane(text, direction) {
+		// Pareto-like distributions: most small/dim/slow, rare giants/bold/fast
+		const sizeRand = Math.random();
+		const speedRand = Math.random();
+		const opacityRand = Math.random();
+
+		// Size: 0.4rem to 18rem - cubic makes most small, rare giants
+		const fontSize = 0.4 + Math.pow(sizeRand, 4) * 17.6;
+
+		// Speed: 20s to 180s - cubic makes most medium-slow, rare glacial
+		const duration = 20 + Math.pow(speedRand, 3) * 160;
+
+		// Opacity: 0.02 to 0.35 - cubic makes most faint, rare bold
+		const opacity = 0.02 + Math.pow(opacityRand, 3) * 0.33;
+
+		backgroundLanes = [...backgroundLanes, {
+			id: laneIdCounter++,
+			text,
+			direction,
+			top: Math.random() * 94 + 3, // 3-97% from top
+			fontSize,
+			duration,
+			opacity
+		}];
+	}
+
+	function removeLane(id) {
+		backgroundLanes = backgroundLanes.filter((l) => l.id !== id);
+	}
+
+	function getCurrentLaneText() {
+		const lineText = lines[currentLineIndex];
+		return lineText?.trim() ? lineText : lines[0] || '';
+	}
+
+	function startLaneSpawner() {
+		if (laneSpawnInterval) return;
+		laneSpawnInterval = setInterval(() => {
+			if (backgroundLanes.length < LANE_POOL_SIZE) {
+				const text = getCurrentLaneText();
+				if (text) spawnLane(text, textDir);
+			}
+		}, 800);
+	}
+
+	function stopLaneSpawner() {
+		if (laneSpawnInterval) {
+			clearInterval(laneSpawnInterval);
+			laneSpawnInterval = null;
+		}
+	}
+
+	// Spawn lanes when line changes (burst of new text)
+	$effect(() => {
+		if (currentLineIndex === lastSpawnedLineIndex) return;
+		const lineText = lines[currentLineIndex];
+		if (lineText?.trim()) {
+			// Spawn 2-4 lanes immediately for the new line
+			const burst = 2 + Math.floor(Math.random() * 3);
+			for (let i = 0; i < burst; i++) {
+				spawnLane(lineText, textDir);
+			}
+			lastSpawnedLineIndex = currentLineIndex;
+		}
+	});
 </script>
 
 <svelte:head>
@@ -599,6 +685,19 @@
 	dir={uiDir}
 	style="--hue: {data.settings.hue}; --font-size: {data.settings.fontSize}rem;"
 >
+	<div class="background-lanes" aria-hidden="true">
+		{#each backgroundLanes as lane (lane.id)}
+			<div
+				class="bg-lane"
+				class:rtl={lane.direction === 'rtl'}
+				style="top: {lane.top}%; font-size: {lane.fontSize}rem; animation-duration: {lane.duration}s; opacity: {lane.opacity};"
+				onanimationend={() => removeLane(lane.id)}
+			>
+				{lane.text}
+			</div>
+		{/each}
+	</div>
+
 	<header class="header">
 		<div class="settings-inline">
 			<button
@@ -798,6 +897,7 @@
 		<textarea
 			bind:this={inputElement}
 			class="input-field"
+			dir="auto"
 			placeholder={tr('startTyping')}
 			value={userInput}
 			oninput={handleInput}
@@ -852,6 +952,39 @@
 </div>
 
 <style>
+	/* Background lanes - space invaders parallax effect */
+	.background-lanes {
+		position: fixed;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
+		z-index: -1;
+	}
+
+	.bg-lane {
+		position: absolute;
+		white-space: nowrap;
+		color: hsl(var(--hue), var(--base-s), 50%);
+		animation: scroll-ltr linear forwards;
+		will-change: transform;
+	}
+
+	.bg-lane.rtl {
+		animation-name: scroll-rtl;
+	}
+
+	/* LTR text moves right-to-left - go fully off-screen before ending */
+	@keyframes scroll-ltr {
+		from { transform: translateX(100vw); }
+		to { transform: translateX(calc(-100% - 10vw)); }
+	}
+
+	/* RTL text moves left-to-right - go fully off-screen before ending */
+	@keyframes scroll-rtl {
+		from { transform: translateX(calc(-100% - 10vw)); }
+		to { transform: translateX(100vw); }
+	}
+
 	.lang-selector {
 		display: flex;
 		align-items: center;
@@ -1005,7 +1138,7 @@
 		justify-content: center;
 		gap: 2rem;
 		padding: 0.5rem 1rem;
-		background: var(--bg-card);
+		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 	}
@@ -1181,7 +1314,7 @@
 		flex-direction: column;
 		gap: 0.2rem;
 		padding: 0.5rem;
-		background: var(--bg-card);
+		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
 		border: 2px solid var(--border);
 		border-radius: 0.25rem;
 		font-family: var(--font-family-mono);
@@ -1272,7 +1405,7 @@
 
 	.input-area {
 		padding: 0.5rem;
-		background: var(--bg-card);
+		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 	}
@@ -1280,14 +1413,13 @@
 	.input-field {
 		width: 100%;
 		padding: 0.5rem;
-		font-family: inherit;
+		font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
 		font-size: var(--font-size);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 		background: var(--bg);
 		color: var(--text);
 		text-align: inherit;
-		direction: inherit;
 		resize: none;
 	}
 
@@ -1333,7 +1465,7 @@
 
 	.history-panel {
 		padding: 0.75rem 1rem;
-		background: var(--bg-card);
+		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 		font-size: 0.875rem;
