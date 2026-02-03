@@ -1,4 +1,4 @@
-.PHONY: install dev build preview clean help
+.PHONY: install dev build preview clean fmt help
 
 BUN := ~/.bun/bin/bun
 
@@ -10,6 +10,7 @@ help:
 	@echo "  make dev       Start development server"
 	@echo "  make build     Build for production"
 	@echo "  make preview   Preview production build"
+	@echo "  make fmt       Format code (Svelte/JS/HTML/CSS)"
 	@echo "  make clean     Remove build artifacts"
 	@echo ""
 
@@ -17,13 +18,16 @@ install:
 	$(BUN) install
 
 dev:
-	$(BUN) run dev
+	$(BUN) run dev --host 0.0.0.0
 
 build:
 	$(BUN) run build
 
 preview:
 	$(BUN) run preview
+
+fmt:
+	$(BUN) x prettier --write .
 
 clean:
 	rm -rf build .svelte-kit node_modules/.vite

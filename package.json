@@ -14,7 +14,14 @@
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.49.1",
 		"@sveltejs/vite-plugin-svelte": "^6.2.1",
+		"prettier": "^3.6.2",
+		"prettier-plugin-svelte": "^3.5.0",
 		"svelte": "^5.45.6",
 		"vite": "^7.2.6"
+	},
+	"dependencies": {
+		"nostr-tools": "^2.22.1",
+		"y-webrtc": "^10.3.0",
+		"yjs": "^13.6.29"
 	}
 }

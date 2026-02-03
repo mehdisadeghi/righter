@@ -5,11 +5,11 @@
 	--font-size: 1.25rem;
 	--font-family: system-ui, -apple-system, sans-serif;
 	--font-family-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
-}
 
-.app {
+	/* Light mode (default) */
 	--bg: hsl(var(--hue), var(--base-s), 97%);
 	--bg-card: hsl(var(--hue), var(--base-s), 100%);
+	--bg-card-alpha: hsl(var(--hue), var(--base-s), 100%, 0.85);
 	--text: hsl(var(--hue), var(--base-s), 15%);
 	--text-muted: hsl(var(--hue), var(--base-s), 45%);
 	--border: hsl(var(--hue), var(--base-s), 88%);
@@ -17,6 +17,22 @@
 	--error: hsl(0, 45%, 45%);
 	--current: hsl(var(--hue), var(--base-s), 75%);
 	--pending: hsl(var(--hue), var(--base-s), 60%);
+	--accent-l: 45%;
+}
+
+/* Dark mode - applied to html element */
+:root.dark {
+	--bg: hsl(var(--hue), var(--base-s), 10%);
+	--bg-card: hsl(var(--hue), var(--base-s), 15%);
+	--bg-card-alpha: hsl(var(--hue), var(--base-s), 15%, 0.85);
+	--text: hsl(var(--hue), var(--base-s), 90%);
+	--text-muted: hsl(var(--hue), var(--base-s), 60%);
+	--border: hsl(var(--hue), var(--base-s), 25%);
+	--correct: hsl(var(--hue), 30%, 60%);
+	--error: hsl(0, 50%, 55%);
+	--current: hsl(var(--hue), var(--base-s), 35%);
+	--pending: hsl(var(--hue), var(--base-s), 45%);
+	--accent-l: 60%;
 }
 
 *,

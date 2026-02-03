@@ -11,13 +11,30 @@
 		exportData,
 		importData,
 		clearHistory,
-		resetSettings
+		resetSettings,
+		saveLocalRace,
+		getMyLocalRaces
 	} from '$lib/storage.js';
+	import { loadIdentity, updateName } from '$lib/identity.js';
+	import { MultiplayerRoom, generateRoomCode, getRoomFromUrl, setRoomInUrl, clearRoomFromUrl } from '$lib/multiplayer-nostr.js';
+	import { publishRace, fetchMyRaces, publishRoomPresence, fetchActiveRooms, fetchRoomParticipants, DEFAULT_RELAYS } from '$lib/nostr.js';
+	import { fetchFastRelays } from '$lib/relay-discovery.js';
+	import { mergeRaceLists, findMissingRaces } from '$lib/crdt.js';
 
 	const MODES = {
 		time: [15, 30, 60, 120],
 		text: [1, 3, 5, 10]
 	};
+
+	// Reliable public relays (curated list with good uptime)
+	const RECOMMENDED_RELAYS = [
+		'wss://relay.damus.io',
+		'wss://nos.lol',
+		'wss://relay.snort.social',
+		'wss://nostr.mom',
+		'wss://relay.nostr.band',
+		'wss://nostr.mutinywallet.com'
+	];
 
 	let data = $state({
 		settings: { uiLanguage: 'en', keyboardLocale: 'en-US', fontSize: 1.25, hue: 220, modeType: 'time', modeValue: 30, physicalLayout: 'ansi', showTyped: false },
@@ -47,6 +64,42 @@
 
 	// Settings panel toggle
 	let showMoreSettings = $state(false);
+	let customModeValue = $state('');
+
+	// Dark mode (session only, defaults to OS preference)
+	let darkMode = $state(false);
+
+	// Sync dark mode and hue to document root for body/background styles
+	$effect(() => {
+		if (typeof document !== 'undefined') {
+			document.documentElement.classList.toggle('dark', darkMode);
+		}
+	});
+
+	$effect(() => {
+		if (typeof document !== 'undefined' && data?.settings?.hue !== undefined) {
+			document.documentElement.style.setProperty('--hue', data.settings.hue);
+		}
+	});
+
+	// Multiplayer state
+	let identity = $state(null);
+	let multiplayerRoom = $state(null);
+	let roomState = $state('waiting');
+	let participants = $state([]);
+	let roomConnected = $state(false);
+	let signalingConnected = $state(false);
+	let peerCount = $state(0);
+	let countdown = $state(null);
+	let showJoinModal = $state(false);
+	let joinRoomCode = $state('');
+	let publishingStats = $state(false);
+	let showPublishPrompt = $state(false);
+	let activeRooms = $state([]);
+	let loadingRooms = $state(false);
+	let presenceInterval = $state(null);
+	let nostrParticipants = $state([]);
+	let connectionCheckInterval = $state(null);
 
 	// Keyboard tracking
 	let pressedKeys = $state(new Set());
@@ -59,8 +112,20 @@
 	let modeType = $derived(data.settings.modeType || 'time');
 	let modeValue = $derived(data.settings.modeValue || 30);
 	let errorReplace = $derived(data.settings.errorReplace || false);
+	let parallax = $derived(data.settings.parallax !== false);
+	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.0);
 	let keyboard = $derived(buildKeyboard(physicalLayout, keyboardLocale));
 	let keyboardMapping = $derived(languageMappings[keyboardLocale]);
+
+	// Relay settings (used for both Nostr and WebRTC signaling)
+	let nostrRelays = $derived(data.settings.nostrRelays || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']);
+	let loadingFastRelays = $state(false);
+
+	// ICE servers for WebRTC (STUN/TURN)
+	let iceServers = $derived(data.settings.iceServers || [
+		{ urls: 'stun:stun.l.google.com:19302' },
+		{ urls: 'stun:stun1.l.google.com:19302' }
+	]);
 
 	// Map keyboard locale to UI language (with fallbacks)
 	const keyboardToUiLang = {
@@ -241,33 +306,65 @@
 		}
 	}
 
+	// Track if OS keyboard layout matches selected layout
+	let osLayoutValid = $state(true);
+
+	function checkOsLayout(e) {
+		// Only check letter keys (KeyA-KeyZ)
+		if (!e.code || !e.code.startsWith('Key')) return true;
+
+		const char = e.key;
+		if (!char || char.length !== 1) return true;
+
+		const expectRTL = isRTL(keyboardLocale);
+
+		// Check if the produced character matches expected script
+		if (expectRTL && isLatinScript(char)) {
+			return false; // OS is Latin, we expect RTL
+		}
+		if (!expectRTL && isArabicScript(char)) {
+			return false; // OS is Arabic, we expect Latin
+		}
+		return true;
+	}
+
+	function handleBeforeInput(e) {
+		// Block all input if OS keyboard layout doesn't match
+		if (!osLayoutValid) {
+			e.preventDefault();
+			triggerMismatchWarning();
+			return;
+		}
+	}
+
 	function handleInput(e) {
 		const value = e.target.value;
 
-		// Check for layout mismatch on new characters - ignore and warn
-		if (value.length > userInput.length) {
-			const newChar = value[value.length - 1];
-			if (checkLayoutMismatch(newChar)) {
-				triggerMismatchWarning();
-				e.target.value = userInput;
-				return;
-			}
-		}
-
-		if (!startTime && value.length > 0) {
+		// In multiplayer, don't start timer locally - it's synced
+		if (!multiplayerRoom && !startTime && value.length > 0) {
 			startTime = Date.now();
 			startTimer();
 		}
 
 		userInput = value;
 
-		// Text mode: complete when all text is typed
-		if (modeType === 'text' && value.length >= targetText.length && !isComplete) {
+		// Sync progress in multiplayer (use correctChars so random typing doesn't count)
+		if (multiplayerRoom && roomState === 'racing') {
+			multiplayerRoom.updateProgress(correctChars, wpm, accuracy);
+		}
+
+		// Text mode: complete when all text is typed (solo only)
+		if (!multiplayerRoom && modeType === 'text' && value.length >= targetText.length && !isComplete) {
 			completeRace();
 		}
 
-		// Time mode: generate more text when running low
-		if (modeType === 'time' && !isComplete && targetText.length - value.length < 100) {
+		// Multiplayer: complete when text is finished
+		if (multiplayerRoom && value.length >= targetText.length && !isComplete) {
+			multiplayerRoom.finishRace(wpm, accuracy);
+		}
+
+		// Time mode: generate more text when running low (solo only)
+		if (!multiplayerRoom && modeType === 'time' && !isComplete && targetText.length - value.length < 100) {
 			appendMoreText();
 		}
 	}
@@ -283,6 +380,11 @@
 			meta: e.metaKey
 		};
 
+		// Don't interfere if user is typing in another input/textarea
+		const activeEl = document.activeElement;
+		const isInOtherInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') && activeEl !== inputElement;
+		if (isInOtherInput) return;
+
 		if (e.key === 'Enter' && isComplete) {
 			e.preventDefault();
 			loadNewText();
@@ -293,9 +395,19 @@
 			loadNewText();
 		}
 
+		// Check OS keyboard layout on letter keys
+		if (e.code?.startsWith('Key') && !e.ctrlKey && !e.metaKey) {
+			osLayoutValid = checkOsLayout(e);
+			if (!osLayoutValid) {
+				e.preventDefault();
+				triggerMismatchWarning();
+				return;
+			}
+		}
+
 		// Focus input on any printable key
 		if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && inputElement) {
-			inputElement.focus();
+			inputElement.focus({ preventScroll: true });
 		}
 	}
 
@@ -383,7 +495,19 @@
 			}
 		}
 		startLaneSpawner();
-		inputElement?.focus();
+		inputElement?.focus({ preventScroll: true });
+	}
+
+	function continueTyping() {
+		isComplete = false;
+		endTime = null;
+		// Append more text for continued typing
+		appendMoreText();
+		appendMoreText();
+		// Reset timer for another round
+		startTime = Date.now() - (modeType === 'time' ? 0 : 0);
+		startTimer();
+		inputElement?.focus({ preventScroll: true });
 	}
 
 	function changeSetting(key, value) {
@@ -391,6 +515,72 @@
 		if (key === 'keyboardLocale' || key === 'modeType' || key === 'modeValue') {
 			loadNewText();
 		}
+	}
+
+	function handleRelayChange(key, textValue) {
+		const urls = textValue.split('\n').map(s => s.trim()).filter(s => s && s.startsWith('wss://'));
+		changeSetting(key, urls);
+	}
+
+	async function loadFastRelays() {
+		if (loadingFastRelays) return;
+		loadingFastRelays = true;
+
+		try {
+			const fastRelays = await fetchFastRelays(5);
+			changeSetting('nostrRelays', fastRelays);
+		} catch {
+			// Fallback to recommended list
+			changeSetting('nostrRelays', [...RECOMMENDED_RELAYS]);
+		}
+
+		loadingFastRelays = false;
+	}
+
+	function loadRecommendedRelays() {
+		changeSetting('nostrRelays', [...RECOMMENDED_RELAYS]);
+	}
+
+	function handleIceServersChange(textValue) {
+		// Parse ICE server config from textarea
+		// Format: one URL per line, optionally followed by username:credential
+		// e.g., stun:stun.example.com
+		//       turn:turn.example.com|username|credential
+		const servers = textValue.split('\n')
+			.map(s => s.trim())
+			.filter(s => s && (s.startsWith('stun:') || s.startsWith('turn:') || s.startsWith('turns:')))
+			.map(line => {
+				const parts = line.split('|');
+				const server = { urls: parts[0] };
+				if (parts[1] && parts[2]) {
+					server.username = parts[1];
+					server.credential = parts[2];
+				}
+				return server;
+			});
+		changeSetting('iceServers', servers);
+	}
+
+	function iceServersToText(servers) {
+		// Convert ICE servers array to textarea format
+		return servers.map(s => {
+			if (s.username && s.credential) {
+				return `${s.urls}|${s.username}|${s.credential}`;
+			}
+			return s.urls;
+		}).join('\n');
+	}
+
+
+	function handleCustomModeValue() {
+		const val = parseInt(customModeValue);
+		if (!val || val <= 0) return;
+		if (modeType === 'time' && val >= 5 && val <= 600) {
+			changeSetting('modeValue', val);
+		} else if (modeType === 'text' && val >= 1 && val <= 50) {
+			changeSetting('modeValue', val);
+		}
+		customModeValue = '';
 	}
 
 	function handleExport() {
@@ -568,7 +758,308 @@
 		return Math.round(h);
 	}
 
+	// Multiplayer functions
+	async function createRoom() {
+		if (!identity) return;
+		const code = generateRoomCode();
+		const config = {
+			text: generateText(1),
+			duration: 60,
+			keyboard: keyboardLocale
+		};
+		await joinRoomWithCode(code, config);
+	}
+
+	async function joinRoom() {
+		if (!identity || !joinRoomCode.trim()) return;
+		const code = joinRoomCode.trim().toUpperCase();
+		await joinRoomWithCode(code, {
+			text: '',
+			duration: 60,
+			keyboard: keyboardLocale
+		});
+		showJoinModal = false;
+		joinRoomCode = '';
+	}
+
+	async function loadActiveRooms() {
+		loadingRooms = true;
+		try {
+			activeRooms = await fetchActiveRooms(null, nostrRelays);
+		} catch {
+			activeRooms = [];
+		}
+		loadingRooms = false;
+	}
+
+	async function joinActiveRoom(room) {
+		showJoinModal = false;
+		await joinRoomWithCode(room.roomCode, {
+			text: '',
+			duration: 60,
+			keyboard: room.keyboard
+		});
+	}
+
+	async function joinRoomWithCode(code, config) {
+		if (multiplayerRoom) {
+			multiplayerRoom.destroy();
+		}
+		stopPresenceInterval();
+
+		const connectionConfig = {
+			relayUrls: nostrRelays,
+			iceServers: iceServers
+		};
+		const room = new MultiplayerRoom(code, identity, config, connectionConfig);
+
+		room.onStateChange = (state) => {
+			roomState = state.state;
+			if (state.state === 'countdown') {
+				startCountdownTimer(state.countdownStart);
+				// Update presence to racing
+				publishRoomPresence(code, identity, config.keyboard || keyboardLocale, 'racing', nostrRelays).catch(() => {});
+			} else if (state.state === 'racing') {
+				countdown = null;
+				if (state.text) {
+					targetText = state.text;
+				}
+				userInput = '';
+				startTime = state.startTime;
+				isComplete = false;
+				startTimer();
+			} else if (state.state === 'finished') {
+				handleMultiplayerRaceEnd();
+			}
+		};
+
+		room.onParticipantsChange = (p) => {
+			participants = p;
+		};
+
+		room.onConnectionChange = (connected) => {
+			roomConnected = connected;
+			if (connected) {
+				startConnectionCheck();
+			}
+		};
+
+		const connected = await room.connect();
+		if (connected) {
+			multiplayerRoom = room;
+			setRoomInUrl(code);
+			// Use room's text if we're joining
+			const state = room.getState();
+			if (state.text) {
+				targetText = state.text;
+			}
+
+			// Publish presence so peers can find us
+			publishRoomPresence(code, identity, config.keyboard || keyboardLocale, 'waiting', nostrRelays).catch(() => {});
+			startPresenceInterval(code, config.keyboard || keyboardLocale);
+		}
+	}
+
+	function startPresenceInterval(roomCode, keyboard) {
+		// Republish presence every 60s to stay visible
+		presenceInterval = setInterval(() => {
+			if (multiplayerRoom && roomState === 'waiting') {
+				publishRoomPresence(roomCode, identity, keyboard, 'waiting', nostrRelays).catch(() => {});
+			}
+		}, 60000);
+
+		// Also refresh participants from Nostr every 10s
+		refreshNostrParticipants(roomCode);
+		const refreshInterval = setInterval(() => {
+			if (multiplayerRoom && roomState === 'waiting') {
+				refreshNostrParticipants(roomCode);
+			} else {
+				clearInterval(refreshInterval);
+			}
+		}, 10000);
+	}
+
+	function stopPresenceInterval() {
+		if (presenceInterval) {
+			clearInterval(presenceInterval);
+			presenceInterval = null;
+		}
+	}
+
+	function startConnectionCheck() {
+		if (connectionCheckInterval) return;
+		const check = () => {
+			if (multiplayerRoom) {
+				const debug = multiplayerRoom.getDebugInfo();
+				signalingConnected = debug.signalingConnected;
+				peerCount = debug.peerCount;
+			}
+		};
+		check();
+		connectionCheckInterval = setInterval(check, 2000);
+	}
+
+	function stopConnectionCheck() {
+		if (connectionCheckInterval) {
+			clearInterval(connectionCheckInterval);
+			connectionCheckInterval = null;
+		}
+	}
+
+	async function refreshNostrParticipants(roomCode) {
+		try {
+			nostrParticipants = await fetchRoomParticipants(roomCode, nostrRelays);
+			if (multiplayerRoom) {
+				multiplayerRoom.setKnownParticipants(
+					nostrParticipants.map((p) => p.pubkeyHex).filter(Boolean)
+				);
+			}
+
+			// Try to connect to discovered peers via WebRTC
+			if (multiplayerRoom) {
+				for (const p of nostrParticipants) {
+					if (p.pubkeyHex && p.pubkeyHex !== identity?.pubkeyHex) {
+						multiplayerRoom.connectToPeer(p.pubkeyHex);
+					}
+				}
+			}
+		} catch {
+			// Ignore errors
+		}
+	}
+
+	function startCountdownTimer(startTime) {
+		const tick = () => {
+			const elapsed = Math.floor((Date.now() - startTime) / 1000);
+			countdown = 3 - elapsed;
+			if (countdown > 0) {
+				requestAnimationFrame(tick);
+			} else {
+				countdown = null;
+			}
+		};
+		tick();
+	}
+
+	function handleMultiplayerRaceEnd() {
+		stopTimer();
+		isComplete = true;
+		if (multiplayerRoom) {
+			multiplayerRoom.finishRace(wpm, accuracy);
+			showPublishPrompt = true;
+		}
+	}
+
+	async function publishRaceStats() {
+		if (!multiplayerRoom || !identity) return;
+		publishingStats = true;
+
+		const raceResult = multiplayerRoom.getRaceResult();
+
+		// Save locally first
+		saveLocalRace(raceResult);
+
+		// Publish to Nostr (with timeout fallback)
+		try {
+			await publishRace(raceResult, identity, nostrRelays);
+		} catch {
+			// Silently fail - data is saved locally
+		}
+
+		publishingStats = false;
+		showPublishPrompt = false;
+	}
+
+	function skipPublish() {
+		// Still save locally, just don't publish
+		if (multiplayerRoom) {
+			const raceResult = multiplayerRoom.getRaceResult();
+			saveLocalRace(raceResult);
+		}
+		showPublishPrompt = false;
+	}
+
+	function leaveRoom() {
+		stopPresenceInterval();
+		stopConnectionCheck();
+		if (multiplayerRoom) {
+			multiplayerRoom.destroy();
+			multiplayerRoom = null;
+		}
+		roomConnected = false;
+		signalingConnected = false;
+		peerCount = 0;
+		roomState = 'waiting';
+		participants = [];
+		nostrParticipants = [];
+		showPublishPrompt = false;
+		clearRoomFromUrl();
+		loadNewText();
+	}
+
+	function startMultiplayerRace() {
+		if (multiplayerRoom && roomState === 'waiting') {
+			const debug = multiplayerRoom.getDebugInfo();
+			console.log('Start Race clicked, debug:', debug);
+
+			// Check if we have signaling issues
+			if (!debug.signalingConnected) {
+				alert('Not connected to Nostr relays for signaling. Check your relay settings.');
+				return;
+			}
+
+			multiplayerRoom.startCountdown();
+		}
+	}
+
+	function raceAgain() {
+		if (multiplayerRoom) {
+			// Reset local state
+			userInput = '';
+			startTime = null;
+			isComplete = false;
+			showPublishPrompt = false;
+
+			// Generate new text and reset room
+			const newText = generateText(1);
+			targetText = newText;
+			multiplayerRoom.resetForNewRace(newText);
+		}
+	}
+
+	// Sync local races with Nostr on load (background, non-blocking)
+	async function syncRacesWithNostr() {
+		if (!identity) return;
+
+		try {
+			const [localRaces, remoteRaces] = await Promise.all([
+				Promise.resolve(getMyLocalRaces(identity.odyseeId)),
+				fetchMyRaces(identity.odyseeId, nostrRelays).catch(() => [])
+			]);
+
+			// Merge and save locally
+			const merged = mergeRaceLists(localRaces, remoteRaces);
+			for (const race of merged) {
+				saveLocalRace(race);
+			}
+
+			// Find races we have that relays don't, and republish
+			const missing = findMissingRaces(localRaces, remoteRaces);
+			for (const race of missing.slice(0, 10)) {
+				publishRace(race, identity, nostrRelays).catch(() => {});
+			}
+		} catch {
+			// Non-critical, ignore
+		}
+	}
+
 	onMount(async () => {
+		// Detect OS dark mode preference and listen for changes
+		const darkModeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+		darkMode = darkModeQuery.matches;
+		const handleColorSchemeChange = (e) => { darkMode = e.matches; };
+		darkModeQuery.addEventListener('change', handleColorSchemeChange);
+
 		data = loadData();
 		if (!data.settings.uiLanguage) {
 			data.settings.uiLanguage = detectLanguage();
@@ -578,18 +1069,41 @@
 			data.settings.keyboardLocale = data.settings.uiLanguage === 'fa' ? 'fa-IR' : 'en-US';
 			saveData(data);
 		}
+
+		// Load identity
+		identity = loadIdentity(isRTL(data.settings.keyboardLocale));
+
 		await loadNewText();
 
+		// Check for room in URL
+		const roomCode = getRoomFromUrl();
+		if (roomCode) {
+			await joinRoomWithCode(roomCode, {
+				text: '',
+				duration: 60,
+				keyboard: keyboardLocale
+			});
+		}
+
+		// Background sync with Nostr (non-blocking)
+		syncRacesWithNostr();
+
 		return () => {
+			darkModeQuery.removeEventListener('change', handleColorSchemeChange);
 			stopTimer();
 			stopLaneSpawner();
+			stopPresenceInterval();
+			stopConnectionCheck();
+			if (multiplayerRoom) {
+				multiplayerRoom.destroy();
+			}
 		};
 	});
 
 	// Focus input after render
 	$effect(() => {
 		if (inputElement && !isComplete) {
-			inputElement.focus();
+			inputElement.focus({ preventScroll: true });
 		}
 	});
 
@@ -644,21 +1158,25 @@
 		});
 	});
 
-	// Spawn a single background lane with extreme diversity (log-normal-like distribution)
+	// Spawn a single background lane with diversity
+	// Base values, scaled by parallaxIntensity setting
 	function spawnLane(text, direction) {
-		// Pareto-like distributions: most small/dim/slow, rare giants/bold/fast
+		const intensity = parallaxIntensity;
 		const sizeRand = Math.random();
 		const speedRand = Math.random();
 		const opacityRand = Math.random();
 
-		// Size: 0.4rem to 18rem - cubic makes most small, rare giants
-		const fontSize = 0.4 + Math.pow(sizeRand, 4) * 17.6;
+		// Size: 0.5-8rem base, scaled by intensity (intensity 2 = up to 16rem)
+		const fontSize = 0.5 + Math.pow(sizeRand, 2) * 7.5 * intensity;
 
-		// Speed: 20s to 180s - cubic makes most medium-slow, rare glacial
-		const duration = 20 + Math.pow(speedRand, 3) * 160;
+		// Duration scales with font size - larger text needs more time to cross
+		// Base: 20-120s, but multiply by fontSize factor so giants move smoothly
+		const baseDuration = (20 + Math.pow(speedRand, 2) * 100) / intensity;
+		const sizeFactor = 1 + (fontSize / 8); // larger text = longer duration
+		const duration = baseDuration * sizeFactor;
 
-		// Opacity: 0.02 to 0.35 - cubic makes most faint, rare bold
-		const opacity = 0.02 + Math.pow(opacityRand, 3) * 0.33;
+		// Opacity: 0.03-0.2 base, more visible with higher intensity
+		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.17) * intensity;
 
 		backgroundLanes = [...backgroundLanes, {
 			id: laneIdCounter++,
@@ -667,7 +1185,7 @@
 			top: Math.random() * 94 + 3, // 3-97% from top
 			fontSize,
 			duration,
-			opacity
+			opacity: Math.min(opacity, 0.6) // cap at 0.6 to avoid too bright
 		}];
 	}
 
@@ -682,12 +1200,16 @@
 
 	function startLaneSpawner() {
 		if (laneSpawnInterval) return;
+		// Use fixed base interval, intensity affects pool size and spawn rate dynamically
 		laneSpawnInterval = setInterval(() => {
-			if (backgroundLanes.length < LANE_POOL_SIZE) {
+			const poolSize = Math.round(LANE_POOL_SIZE * parallaxIntensity);
+			// Skip some spawns at low intensity, spawn extra at high intensity
+			const spawnChance = parallaxIntensity;
+			if (backgroundLanes.length < poolSize && Math.random() < spawnChance) {
 				const text = getCurrentLaneText();
 				if (text) spawnLane(text, textDir);
 			}
-		}, 800);
+		}, 400);
 	}
 
 	function stopLaneSpawner() {
@@ -710,6 +1232,7 @@
 			lastSpawnedLineIndex = currentLineIndex;
 		}
 	});
+
 </script>
 
 <svelte:head>
@@ -722,8 +1245,9 @@
 
 <div
 	class="app"
+	class:parallax={parallax}
 	dir={uiDir}
-	style="--hue: {data.settings.hue}; --font-size: {data.settings.fontSize}rem;"
+	style="--font-size: {data.settings.fontSize}rem;"
 >
 	<div class="background-lanes" aria-hidden="true">
 		{#each backgroundLanes as lane (lane.id)}
@@ -770,6 +1294,14 @@
 			</select>
 
 			<button
+				class="mode-btn"
+				onclick={() => darkMode = !darkMode}
+				title={darkMode ? 'Light mode' : 'Dark mode'}
+			>
+				{darkMode ? '☀' : '☾'}
+			</button>
+
+			<button
 				class="mode-btn more-toggle"
 				onclick={() => showMoreSettings = !showMoreSettings}
 				title="More settings"
@@ -781,82 +1313,147 @@
 		<fieldset class="settings-panel" class:open={showMoreSettings}>
 			<legend>{tr('settings')}</legend>
 			<div class="settings-content">
-				<label class="setting-item">
-					<span class="setting-label">{tr('mode')}</span>
-					<select
-						class="setting-select"
-						value={modeType}
-						onchange={(e) => changeSetting('modeType', e.target.value)}
-					>
-						<option value="time">{tr('time')}</option>
-						<option value="text">{tr('texts')}</option>
-					</select>
-					<select
-						class="setting-select"
-						value={modeValue}
-						onchange={(e) => changeSetting('modeValue', parseInt(e.target.value))}
-					>
-						{#each MODES[modeType] as value}
-							<option value={value}>
-								{#if modeType === 'time'}
-									{value >= 60 ? formatNumber(value / 60) + tr('min') : formatNumber(value) + tr('sec')}
-								{:else}
-									{formatNumber(value)}
-								{/if}
-							</option>
-						{/each}
-					</select>
+				<div class="settings-row">
+					<label class="setting-item">
+						<span class="setting-label">{tr('mode')}</span>
+						<select
+							class="setting-select"
+							value={modeType}
+							onchange={(e) => changeSetting('modeType', e.target.value)}
+						>
+							<option value="time">{tr('time')}</option>
+							<option value="text">{tr('texts')}</option>
+						</select>
+						<select
+							class="setting-select"
+							value={modeValue}
+							onchange={(e) => changeSetting('modeValue', parseInt(e.target.value))}
+						>
+							{#each MODES[modeType] as value}
+								<option value={value}>
+									{#if modeType === 'time'}
+										{value >= 60 ? formatNumber(value / 60) + tr('min') : formatNumber(value) + tr('sec')}
+									{:else}
+										{formatNumber(value)}
+									{/if}
+								</option>
+							{/each}
+						</select>
+						<input
+							type="number"
+							class="setting-input-small"
+							placeholder={tr('custom')}
+							min={modeType === 'time' ? 5 : 1}
+							max={modeType === 'time' ? 600 : 50}
+							bind:value={customModeValue}
+							onkeydown={(e) => e.key === 'Enter' && handleCustomModeValue()}
+							onblur={handleCustomModeValue}
+						/>
+					</label>
+
+					<label class="setting-item" title={tr('fontSizeTooltip')}>
+						<span class="setting-label">{tr('fontSize')}</span>
+						<input
+							type="range"
+							min="0.875"
+							max="2"
+							step="0.125"
+							value={data.settings.fontSize}
+							oninput={(e) => changeSetting('fontSize', parseFloat(e.target.value))}
+						/>
+					</label>
+
+					<label class="setting-item" title={tr('colorTooltip')}>
+						<span class="setting-label">{tr('color')}</span>
+						<input
+							type="color"
+							value={hueToHex(data.settings.hue)}
+							oninput={(e) => changeSetting('hue', hexToHue(e.target.value))}
+						/>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('errorReplace')}</span>
+						<input
+							type="checkbox"
+							checked={errorReplace}
+							onchange={(e) => changeSetting('errorReplace', e.target.checked)}
+						/>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('parallax')}</span>
+						<input
+							type="checkbox"
+							checked={parallax}
+							onchange={(e) => changeSetting('parallax', e.target.checked)}
+						/>
+					</label>
+
+					{#if parallax}
+					<label class="setting-item" title={tr('intensity')}>
+						<span class="setting-label">{tr('intensity')}</span>
+						<input
+							type="range"
+							min="0.5"
+							max="3"
+							step="0.25"
+							value={parallaxIntensity}
+							oninput={(e) => changeSetting('parallaxIntensity', parseFloat(e.target.value))}
+						/>
+						<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
+					</label>
+					{/if}
+
+					<label class="setting-item" title={tr('langOverride')}>
+						<span class="setting-label">{tr('language')}</span>
+						<select
+							class="setting-select"
+							value={langOverride}
+							onchange={(e) => changeSetting('langOverride', e.target.value)}
+						>
+							<option value="">{tr('auto')}</option>
+							{#each supportedLanguages as l}
+								<option value={l.code}>{l.nativeName}</option>
+							{/each}
+						</select>
+					</label>
+				</div>
+
+				<label class="setting-item setting-vertical">
+					<span class="setting-label">
+						{tr('nostrRelays')}
+						<button class="btn-tiny" type="button" onclick={loadFastRelays} disabled={loadingFastRelays} title="Load fast relays via NIP-66">
+							{loadingFastRelays ? '...' : '⚡'}
+						</button>
+						<button class="btn-tiny" type="button" onclick={loadRecommendedRelays} title="Load recommended relays">↻</button>
+					</span>
+					<textarea
+						class="setting-textarea"
+						rows="3"
+						placeholder="wss://relay.damus.io"
+						value={nostrRelays.join('\n')}
+						onchange={(e) => handleRelayChange('nostrRelays', e.target.value)}
+					></textarea>
 				</label>
 
-				<label class="setting-item" title={tr('fontSizeTooltip')}>
-					<span class="setting-label">{tr('fontSize')}</span>
-					<input
-						type="range"
-						min="0.875"
-						max="2"
-						step="0.125"
-						value={data.settings.fontSize}
-						oninput={(e) => changeSetting('fontSize', parseFloat(e.target.value))}
-					/>
+				<label class="setting-item setting-vertical">
+					<span class="setting-label">{tr('iceServers')}</span>
+					<textarea
+						class="setting-textarea"
+						rows="3"
+						placeholder="stun:stun.example.com&#10;turn:turn.example.com|username|credential"
+						value={iceServersToText(iceServers)}
+						onchange={(e) => handleIceServersChange(e.target.value)}
+					></textarea>
 				</label>
 
-				<label class="setting-item" title={tr('colorTooltip')}>
-					<span class="setting-label">{tr('color')}</span>
-					<input
-						type="color"
-						value={hueToHex(data.settings.hue)}
-						oninput={(e) => changeSetting('hue', hexToHue(e.target.value))}
-					/>
-				</label>
-
-				<label class="setting-item">
-					<span class="setting-label">{tr('errorReplace')}</span>
-					<input
-						type="checkbox"
-						checked={errorReplace}
-						onchange={(e) => changeSetting('errorReplace', e.target.checked)}
-					/>
-				</label>
-
-				<label class="setting-item" title={tr('langOverride')}>
-					<span class="setting-label">{tr('language')}</span>
-					<select
-						class="setting-select"
-						value={langOverride}
-						onchange={(e) => changeSetting('langOverride', e.target.value)}
-					>
-						<option value="">{tr('auto')}</option>
-						{#each supportedLanguages as l}
-							<option value={l.code}>{l.nativeName}</option>
-						{/each}
-					</select>
-				</label>
 
 				<div class="setting-item">
 					<span class="setting-label">{tr('data')}</span>
 					<button class="setting-btn" onclick={handleExport}>{tr('export')}</button>
 					<button class="setting-btn" onclick={handleImport}>{tr('import')}</button>
-					<button class="setting-btn reset-btn" onclick={handleResetSettings}>{uiDir === 'rtl' ? 'ریسیت' : 'reset'}</button>
+					<button class="setting-btn reset-btn" onclick={handleResetSettings}>{uiDir === 'rtl' ? 'ریست' : 'reset'}</button>
 				</div>
 			</div>
 		</fieldset>
@@ -943,21 +1540,196 @@
 		{/each}
 	</div>
 
+	{#if multiplayerRoom}
+		{@const mergedParticipants = (() => {
+			const base = [...participants];
+			const seen = new Set(base.map(p => p.odyseeId));
+			// Ensure current player is always shown
+			if (identity && !seen.has(identity.odyseeId)) {
+				base.push({
+					odyseeId: identity.odyseeId,
+					name: identity.name,
+					color: identity.color,
+					progress: correctChars,
+					wpm,
+					accuracy,
+					connected: true,
+					finished: isComplete
+				});
+				seen.add(identity.odyseeId);
+			}
+			// Always merge Nostr participants as fallback (covers slow Yjs sync)
+			for (const p of nostrParticipants) {
+				if (!seen.has(p.odyseeId)) {
+					base.push({ ...p, progress: 0, wpm: 0, connected: true, finished: false });
+				}
+			}
+			return base;
+		})()}
+		{@const displayParticipants = mergedParticipants}
+		{@const participantCount = displayParticipants.length}
+		<div class="race-track">
+			<div class="race-header">
+				<span class="room-code">{multiplayerRoom.roomCode}</span>
+				<span class="connection-status" class:connected={signalingConnected} class:has-peers={peerCount > 0} title={signalingConnected ? `Signaling OK, ${peerCount} peer(s)` : 'Signaling disconnected'}>
+					{#if signalingConnected}
+						{#if peerCount > 0}●{:else}○{/if}
+					{:else}
+						⚠
+					{/if}
+				</span>
+				<span class="race-status">
+					{#if roomState === 'waiting'}
+						{participantCount} player{participantCount !== 1 ? 's' : ''}
+					{:else if roomState === 'countdown'}
+						{countdown}
+					{:else if roomState === 'racing'}
+						{formatTime(Math.max(0, 60 - elapsedSeconds))}
+					{:else}
+						Finished
+					{/if}
+				</span>
+				<button class="btn-small" onclick={leaveRoom}>{tr('leave')}</button>
+			</div>
+			<div class="race-lanes">
+				{#each displayParticipants as p (p.odyseeId || p.pubkeyHex)}
+					{@const progressPct = targetText.length > 0 ? (p.progress / targetText.length) * 100 : 0}
+					{@const isMe = p.odyseeId === identity?.odyseeId || p.pubkeyHex === identity?.pubkeyHex}
+					<div class="race-lane" class:is-me={isMe} class:disconnected={!p.connected}>
+						<span class="lane-name">{p.name}</span>
+						<div class="lane-progress">
+							<div class="lane-bar" style="width: {progressPct}%"></div>
+							<span class="lane-icon" style="inset-inline-start: {progressPct}%; color: hsl({p.color}, 60%, var(--accent-l))">{isMe ? '🐢' : '🐇'}</span>
+						</div>
+						<span class="lane-wpm">{formatNumber(p.wpm)}</span>
+					</div>
+				{/each}
+			</div>
+			{#if roomState === 'waiting'}
+				<button class="btn race-start-btn" onclick={startMultiplayerRace}>{tr('startRace')}</button>
+			{/if}
+			{#if roomState === 'finished'}
+				{@const sortedByWpm = [...displayParticipants].sort((a, b) => b.wpm - a.wpm)}
+				{@const winner = sortedByWpm[0]}
+				{@const myResult = sortedByWpm.find(p => p.odyseeId === identity?.odyseeId)}
+				{@const myRank = sortedByWpm.findIndex(p => p.odyseeId === identity?.odyseeId) + 1}
+				{@const isWinner = winner?.odyseeId === identity?.odyseeId}
+				<div class="race-results">
+					<div class="result-winner" style="color: hsl({winner?.color || 200}, 60%, var(--accent-l))">
+						{#if isWinner}
+							{tr('youWon')}
+						{:else}
+							{tr('winner')}: {winner?.name}
+						{/if}
+						<span class="result-stats">{formatNumber(winner?.wpm || 0)} {tr('wpm')} / {winner?.accuracy || 0}%</span>
+					</div>
+					{#if !isWinner && myResult}
+						<div class="result-you">
+							{tr('yourResult')}: {tr('rank')} #{myRank}
+							<span class="result-stats">{formatNumber(myResult.wpm)} {tr('wpm')} / {myResult.accuracy}%</span>
+						</div>
+					{/if}
+				</div>
+				{#if !showPublishPrompt}
+					<button class="btn" onclick={raceAgain}>{tr('raceAgain')}</button>
+				{/if}
+			{/if}
+		</div>
+	{/if}
+
+	{#if showPublishPrompt}
+		<div class="modal-overlay">
+			<div class="modal">
+				<h3>Publish Results?</h3>
+				<p>Share your race stats to the public leaderboard?</p>
+				<div class="modal-buttons">
+					<button class="btn" onclick={publishRaceStats} disabled={publishingStats}>
+						{publishingStats ? 'Publishing...' : 'Yes, publish'}
+					</button>
+					<button class="btn" onclick={skipPublish}>No, keep private</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
+	{#if showJoinModal}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div
+			class="modal-overlay"
+			role="button"
+			tabindex="0"
+			aria-label="Close join room dialog"
+			onclick={() => showJoinModal = false}
+			onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (showJoinModal = false)}
+		>
+			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+			<div
+				class="modal"
+				role="dialog"
+				aria-modal="true"
+				tabindex="0"
+				onclick={(e) => e.stopPropagation()}
+			>
+				<h3>{tr('joinRoom')}</h3>
+				<input
+					type="text"
+					class="room-input"
+					placeholder="Room code (e.g. ABCD)"
+					maxlength="4"
+					bind:value={joinRoomCode}
+					onkeydown={(e) => e.key === 'Enter' && joinRoom()}
+				/>
+				<div class="modal-buttons">
+					<button class="btn" onclick={joinRoom}>{tr('join')}</button>
+					<button class="btn" onclick={() => showJoinModal = false}>{tr('close')}</button>
+				</div>
+
+				<div class="active-rooms">
+					<div class="active-rooms-header">
+						<span>Active Rooms</span>
+						<button class="btn-small" onclick={loadActiveRooms} disabled={loadingRooms}>
+							{loadingRooms ? '...' : 'Refresh'}
+						</button>
+					</div>
+					{#if activeRooms.length === 0}
+						<p class="no-rooms">{loadingRooms ? 'Loading...' : 'No active rooms found'}</p>
+					{:else}
+						<ul class="room-list">
+							{#each activeRooms as room}
+								<li class="room-item">
+									<span class="room-item-code">{room.roomCode}</span>
+									<span class="room-item-players">{room.participants?.length || 1}</span>
+									<span class="room-item-host" style="color: hsl({room.participants?.[0]?.color || 200}, 50%, 40%)">{room.participants?.[0]?.name || 'Unknown'}</span>
+									<span class="room-item-kb">{room.keyboard}</span>
+									<button class="btn-small" onclick={() => joinActiveRoom(room)}>{tr('join')}</button>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	<div class="input-area">
-		{#if isComplete}
+		{#if isComplete && !multiplayerRoom}
 			<div class="complete-message">
-				<p>{tr('raceComplete')} {formatNumber(wpm)} {tr('wpm')}, {formatPercent(accuracy)}</p>
-				<p class="hint">{tr('pressEnter')}</p>
+				<p>{tr('raceComplete')} {formatNumber(wpm)} {tr('wpm')}{uiDir === 'rtl' ? '،' : ','} {formatPercent(accuracy)}</p>
+				<div class="complete-actions">
+					<button class="btn" onclick={loadNewText}>{tr('newText')}</button>
+					<button class="btn" onclick={continueTyping}>{tr('oneMoreTime')}</button>
+				</div>
 			</div>
 		{/if}
 		<textarea
 			bind:this={inputElement}
 			class="input-field"
 			dir="auto"
-			placeholder={tr('startTyping')}
+			placeholder={multiplayerRoom && roomState !== 'racing' ? 'Waiting for race to start...' : tr('startTyping')}
 			value={userInput}
+			onbeforeinput={handleBeforeInput}
 			oninput={handleInput}
-			disabled={isComplete}
+			disabled={isComplete || (multiplayerRoom && roomState !== 'racing')}
 			autocomplete="off"
 			autocorrect="off"
 			autocapitalize="off"
@@ -965,10 +1737,15 @@
 			rows="3"
 		></textarea>
 		<div class="controls">
-			<button class="btn" onclick={loadNewText}>{tr('newText')}</button>
-			<button class="btn" onclick={handleLoadTexts}>{tr('loadText')}</button>
-			{#if uploadedTexts}
-				<button class="btn" onclick={handleClearTexts}>{tr('clearTexts')}</button>
+			{#if !multiplayerRoom}
+				<button class="btn" onclick={loadNewText}>{tr('newText')}</button>
+				<button class="btn" onclick={handleLoadTexts}>{tr('loadText')}</button>
+				{#if uploadedTexts}
+					<button class="btn" onclick={handleClearTexts}>{tr('clearTexts')}</button>
+				{/if}
+				<span class="controls-divider"></span>
+				<button class="btn" onclick={createRoom}>{tr('createRoom')}</button>
+				<button class="btn" onclick={() => { showJoinModal = true; loadActiveRooms(); }}>{tr('joinRoom')}</button>
 			{/if}
 		</div>
 	</div>
@@ -1005,6 +1782,7 @@
 
 	.bg-lane {
 		position: absolute;
+		left: 0;
 		white-space: nowrap;
 		color: hsl(var(--hue), var(--base-s), 50%);
 		animation: scroll-ltr linear forwards;
@@ -1015,15 +1793,15 @@
 		animation-name: scroll-rtl;
 	}
 
-	/* LTR text moves right-to-left - go fully off-screen before ending */
+	/* LTR text moves right-to-left - travel full width + 200vw buffer for giant text */
 	@keyframes scroll-ltr {
 		from { transform: translateX(100vw); }
-		to { transform: translateX(calc(-100% - 10vw)); }
+		to { transform: translateX(calc(-100% - 200vw)); }
 	}
 
-	/* RTL text moves left-to-right - go fully off-screen before ending */
+	/* RTL text moves left-to-right - travel full width + 200vw buffer for giant text */
 	@keyframes scroll-rtl {
-		from { transform: translateX(calc(-100% - 10vw)); }
+		from { transform: translateX(calc(-100% - 200vw)); }
 		to { transform: translateX(100vw); }
 	}
 
@@ -1053,7 +1831,8 @@
 	}
 
 	.settings-panel.open {
-		max-height: 10rem;
+		max-height: 80vh;
+		overflow-y: auto;
 		opacity: 1;
 		margin-top: 0.5rem;
 		padding: 0.5rem 0.75rem;
@@ -1070,10 +1849,15 @@
 
 	.settings-content {
 		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.settings-row {
+		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.75rem 1.5rem;
-		max-width: 100%;
+		gap: 0.5rem 1rem;
 	}
 
 	.setting-item {
@@ -1085,6 +1869,13 @@
 	.setting-label {
 		font-size: 0.7rem;
 		color: var(--text-muted);
+	}
+
+	.setting-value {
+		font-size: 0.65rem;
+		color: var(--text-muted);
+		min-width: 2rem;
+		text-align: center;
 	}
 
 	.setting-select {
@@ -1126,6 +1917,60 @@
 	.setting-btn.reset-btn:hover {
 		background: hsla(0, 45%, 45%, 0.1);
 	}
+
+	.setting-input-small {
+		width: 3rem;
+		padding: 0.2rem 0.3rem;
+		font-family: inherit;
+		font-size: 0.7rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		color: var(--text-muted);
+		text-align: center;
+	}
+
+	.setting-input-small::placeholder {
+		font-size: 0.6rem;
+	}
+
+	.setting-input-small::-webkit-outer-spin-button,
+	.setting-input-small::-webkit-inner-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
+	.setting-vertical {
+		flex-direction: column;
+		align-items: stretch !important;
+		gap: 0.25rem;
+	}
+
+	.setting-textarea {
+		width: 100%;
+		padding: 0.25rem 0.5rem;
+		font-family: monospace;
+		font-size: 0.65rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		color: var(--text-muted);
+		resize: vertical;
+		line-height: 1.4;
+	}
+
+	.setting-input {
+		flex: 1;
+		min-width: 0;
+		padding: 0.25rem 0.5rem;
+		font-family: inherit;
+		font-size: 0.7rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		color: var(--text-muted);
+	}
+
 
 	.setting-item input[type="range"] {
 		width: 4rem;
@@ -1241,12 +2086,29 @@
 		background: var(--border);
 	}
 
+	.btn-tiny {
+		padding: 0.1rem 0.3rem;
+		font-family: inherit;
+		font-size: 0.65rem;
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 0.2rem;
+		color: var(--text-muted);
+		cursor: pointer;
+		margin-inline-start: 0.25rem;
+		vertical-align: middle;
+	}
+
+	.btn-tiny:hover {
+		background: var(--border);
+	}
+
 	.metrics-bar {
 		display: flex;
 		justify-content: center;
 		gap: 2rem;
 		padding: 0.5rem 1rem;
-		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
+		background: var(--bg-card-alpha);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 		font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
@@ -1411,7 +2273,7 @@
 		flex-direction: column;
 		gap: 0.2rem;
 		padding: 0.5rem;
-		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
+		background: var(--bg-card-alpha);
 		border: 2px solid var(--border);
 		border-radius: 0.25rem;
 		font-family: var(--font-family-mono);
@@ -1502,7 +2364,7 @@
 
 	.input-area {
 		padding: 0.5rem;
-		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
+		background: var(--bg-card-alpha);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 	}
@@ -1554,6 +2416,13 @@
 		border-radius: 0.25rem;
 	}
 
+	.complete-actions {
+		display: flex;
+		justify-content: center;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
+	}
+
 	.hint {
 		font-size: 0.75rem;
 		color: var(--text-muted);
@@ -1562,7 +2431,7 @@
 
 	.history-panel {
 		padding: 0.75rem 1rem;
-		background: hsl(var(--hue), var(--base-s), 100%, 0.85);
+		background: var(--bg-card-alpha);
 		border: 1px solid var(--border);
 		border-radius: 0.25rem;
 		font-size: 0.875rem;
@@ -1596,5 +2465,280 @@
 
 	.history-item:last-child {
 		border-bottom: none;
+	}
+
+	/* Multiplayer styles */
+	.race-track {
+		padding: 0.75rem 1rem;
+		background: var(--bg-card-alpha);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+	}
+
+	.race-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 0.5rem;
+		padding-bottom: 0.5rem;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.room-code {
+		font-family: var(--font-family-mono);
+		font-weight: 600;
+		font-size: 0.875rem;
+		color: var(--text);
+	}
+
+	.connection-status {
+		font-size: 0.75rem;
+		color: var(--error);
+		cursor: help;
+	}
+
+	.connection-status.connected {
+		color: var(--text-muted);
+	}
+
+	.connection-status.connected.has-peers {
+		color: var(--correct);
+	}
+
+	.race-status {
+		font-size: 0.875rem;
+		color: var(--text-muted);
+	}
+
+	.race-lanes {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	.race-lane {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.25rem 0;
+	}
+
+	.race-lane.is-me {
+		font-weight: 600;
+	}
+
+	.race-lane.disconnected {
+		opacity: 0.4;
+	}
+
+	.lane-icon {
+		position: absolute;
+		top: 50%;
+		transform: translateY(-50%);
+		font-size: 1.25rem;
+		line-height: 1;
+		transition: inset-inline-start 0.15s ease-out;
+	}
+
+	[dir="ltr"] .lane-icon {
+		transform: translateY(-50%) scaleX(-1);
+	}
+
+	.lane-name {
+		font-size: 0.75rem;
+		min-width: 6rem;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lane-progress {
+		flex: 1;
+		height: 0.5rem;
+		border-radius: 0.25rem;
+		position: relative;
+		border: 1px solid var(--border);
+	}
+
+	.lane-bar {
+		height: 100%;
+		background: var(--text-muted);
+		transition: width 0.15s ease-out;
+		border-radius: 0.25rem;
+	}
+
+	.lane-wpm {
+		font-size: 0.75rem;
+		font-family: var(--font-family-mono);
+		min-width: 2.5rem;
+		text-align: right;
+		color: var(--text-muted);
+	}
+
+	.race-start-btn {
+		margin-top: 0.75rem;
+		width: 100%;
+	}
+
+	.race-results {
+		margin-top: 1rem;
+		padding: 1rem;
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		text-align: center;
+	}
+
+	.result-winner {
+		font-size: 1.25rem;
+		font-weight: 600;
+		margin-bottom: 0.5rem;
+	}
+
+	.result-you {
+		color: var(--text-muted);
+	}
+
+	.result-stats {
+		display: block;
+		font-size: 0.875rem;
+		font-weight: normal;
+		opacity: 0.8;
+	}
+
+	.controls-divider {
+		width: 1px;
+		height: 1.5rem;
+		background: var(--border);
+		margin: 0 0.25rem;
+	}
+
+	.modal-overlay {
+		position: fixed;
+		inset: 0;
+		background: hsla(var(--hue), var(--base-s), 15%, 0.6);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+
+	.modal {
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: 0.5rem;
+		padding: 1.5rem;
+		min-width: 20rem;
+		max-width: 90vw;
+	}
+
+	.modal h3 {
+		margin-bottom: 0.75rem;
+		font-size: 1rem;
+	}
+
+	.modal p {
+		margin-bottom: 1rem;
+		color: var(--text-muted);
+		font-size: 0.875rem;
+	}
+
+	.modal-buttons {
+		display: flex;
+		gap: 0.5rem;
+		justify-content: flex-end;
+	}
+
+	.room-input {
+		width: 100%;
+		padding: 0.75rem;
+		font-family: var(--font-family-mono);
+		font-size: 1.25rem;
+		text-align: center;
+		text-transform: uppercase;
+		letter-spacing: 0.25em;
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		background: var(--bg);
+		color: var(--text);
+		margin-bottom: 1rem;
+	}
+
+	.room-input:focus {
+		outline: 2px solid var(--text-muted);
+		outline-offset: 2px;
+	}
+
+	.active-rooms {
+		margin-top: 1.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.active-rooms-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.75rem;
+		font-size: 0.875rem;
+		color: var(--text-muted);
+	}
+
+	.no-rooms {
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		text-align: center;
+		padding: 0.5rem;
+	}
+
+	.room-list {
+		list-style: none;
+		max-height: 10rem;
+		overflow-y: auto;
+	}
+
+	.room-item {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem;
+		border-radius: 0.25rem;
+		background: var(--bg);
+		margin-bottom: 0.375rem;
+	}
+
+	.room-item:hover {
+		background: var(--border);
+	}
+
+	.room-item-code {
+		font-family: var(--font-family-mono);
+		font-weight: 600;
+		font-size: 0.875rem;
+	}
+
+	.room-item-players {
+		font-size: 0.625rem;
+		color: var(--text-muted);
+		background: var(--border);
+		padding: 0.125rem 0.375rem;
+		border-radius: 0.75rem;
+	}
+
+	.room-item-host {
+		flex: 1;
+		font-size: 0.75rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.room-item-kb {
+		font-size: 0.625rem;
+		color: var(--text-muted);
+	}
+
+	/* Parallax - hide background lanes when disabled */
+	.app:not(.parallax) .background-lanes {
+		display: none;
 	}
 </style>
