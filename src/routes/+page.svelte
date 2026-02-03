@@ -1,7 +1,7 @@
 <script>
 	import { onMount, tick } from 'svelte';
 	import { t, getDirection, supportedLanguages } from '$lib/i18n.js';
-	import { getRandomTextItem, getTextMeta } from '$lib/texts.js';
+	import { getRandomTextItem, getTextMeta, getTextCount } from '$lib/texts.js';
 	import { buildKeyboard, languageMappings, keyboardGroups, isRTL } from '$lib/keyboards/index.js';
 	import {
 		loadData,
@@ -49,6 +49,7 @@
 	let startTime = $state(null);
 	let endTime = $state(null);
 	let isComplete = $state(false);
+	let endlessMode = $state(false);
 	let inputElement = $state(null);
 	let textDisplayElement = $state(null);
 	let timerInterval = $state(null);
@@ -68,6 +69,10 @@
 
 	// Dark mode (session only, defaults to OS preference)
 	let darkMode = $state(false);
+
+	// Mouse position for spotlight effect
+	let mouseX = $state(50);
+	let mouseY = $state(50);
 
 	// Sync dark mode and hue to document root for body/background styles
 	$effect(() => {
@@ -94,12 +99,15 @@
 	let showJoinModal = $state(false);
 	let joinRoomCode = $state('');
 	let publishingStats = $state(false);
-	let showPublishPrompt = $state(false);
 	let activeRooms = $state([]);
 	let loadingRooms = $state(false);
 	let presenceInterval = $state(null);
 	let nostrParticipants = $state([]);
 	let connectionCheckInterval = $state(null);
+	let raceAnnounced = $state(false);
+	let historyChartEl = $state(null);
+	let historyChart = $state(null);
+	let ChartJS = $state(null);
 
 	// Keyboard tracking
 	let pressedKeys = $state(new Set());
@@ -114,6 +122,9 @@
 	let errorReplace = $derived(data.settings.errorReplace || false);
 	let parallax = $derived(data.settings.parallax !== false);
 	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.0);
+	let laneGlow = $derived(data.settings.laneGlow === true);
+	let spotlight = $derived(data.settings.spotlight === true);
+	let dotPattern = $derived(data.settings.dotPattern !== false);
 	let keyboard = $derived(buildKeyboard(physicalLayout, keyboardLocale));
 	let keyboardMapping = $derived(languageMappings[keyboardLocale]);
 
@@ -150,8 +161,12 @@
 	let tr = $derived(t(uiLang));
 	let uiDir = $derived(getDirection(uiLang));
 	let textDir = $derived(isRTL(keyboardLocale) ? 'rtl' : 'ltr');
-	// Text content based on keyboard direction (RTL keyboards get FA texts, LTR get EN texts)
-	let textLang = $derived(isRTL(keyboardLocale) ? 'fa' : 'en');
+	// Text content follows keyboard locale when possible; UI language override does not affect text selection.
+	let textLang = $derived.by(() => {
+		const localeLang = keyboardLocale?.split('-')[0];
+		if (localeLang && getTextCount(localeLang) > 0) return localeLang;
+		return isRTL(keyboardLocale) ? 'fa' : 'en';
+	});
 	let meta = $derived(getTextMeta(textLang));
 
 	// Map characters to key codes for highlighting next expected key
@@ -292,6 +307,46 @@
 		return Math.round(words / minutes);
 	});
 
+	let historySeries = $derived.by(() => {
+		const items = [...data.history].slice(0, 30).reverse();
+		return {
+			labels: items.map((r) => formatDate(r.timestamp)),
+			wpm: items.map((r) => r.wpm),
+			accuracy: items.map((r) => r.accuracy)
+		};
+	});
+
+	let mergedParticipants = $derived.by(() => {
+		const base = [...participants];
+		const seen = new Set(base.map(p => p.odyseeId || p.pubkeyHex));
+		if (identity && !seen.has(identity.odyseeId)) {
+			base.push({
+				odyseeId: identity.odyseeId,
+				name: identity.name,
+				color: identity.color,
+				progress: correctChars,
+				wpm,
+				accuracy,
+				connected: true,
+				finished: isComplete
+			});
+			seen.add(identity.odyseeId);
+		}
+		for (const p of nostrParticipants) {
+			if (!seen.has(p.odyseeId)) {
+				base.push({ ...p, progress: 0, wpm: 0, connected: true, finished: false });
+			}
+		}
+		return base;
+	});
+
+	let allParticipantsFinished = $derived.by(() => {
+		if (!multiplayerRoom || mergedParticipants.length === 0) return false;
+		return mergedParticipants.every(p => p.finished);
+	});
+
+	let multiplayerDuration = $derived.by(() => multiplayerRoom?.duration || (modeType === 'time' ? modeValue : 60));
+
 	function startTimer() {
 		if (timerInterval) return;
 		timerInterval = setInterval(() => {
@@ -305,6 +360,127 @@
 			timerInterval = null;
 		}
 	}
+
+	$effect(() => {
+		if (!historyChartEl || !ChartJS) return;
+		if (historySeries.labels.length === 0) {
+			if (historyChart) {
+				historyChart.destroy();
+				historyChart = null;
+			}
+			return;
+		}
+
+		if (!historyChart) {
+			// Get computed hue from CSS variable
+			const hue = getComputedStyle(document.documentElement).getPropertyValue('--hue').trim() || '220';
+			const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim();
+			const gridColor = `hsla(${hue}, 10%, 50%, 0.15)`;
+
+			historyChart = new ChartJS(historyChartEl, {
+				type: 'line',
+				data: {
+					labels: historySeries.labels,
+					datasets: [
+						{
+							label: 'WPM',
+							data: historySeries.wpm,
+							borderColor: `hsl(${hue}, 60%, 50%)`,
+							backgroundColor: `hsla(${hue}, 60%, 50%, 0.1)`,
+							borderWidth: 2,
+							tension: 0.3,
+							fill: true,
+							pointRadius: 3,
+							pointHoverRadius: 5
+						},
+						{
+							label: 'Accuracy',
+							data: historySeries.accuracy,
+							borderColor: `hsl(${hue}, 25%, 60%)`,
+							backgroundColor: 'transparent',
+							borderWidth: 2,
+							borderDash: [4, 4],
+							tension: 0.3,
+							yAxisID: 'y1',
+							pointRadius: 2,
+							pointHoverRadius: 4
+						}
+					]
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: {
+						intersect: false,
+						mode: 'index'
+					},
+					plugins: {
+						legend: {
+							display: true,
+							position: 'bottom',
+							labels: {
+								color: textColor || `hsl(${hue}, 10%, 60%)`,
+								usePointStyle: true,
+								padding: 15
+							}
+						}
+					},
+					scales: {
+						x: {
+							display: false
+						},
+						y: {
+							ticks: { color: textColor || `hsl(${hue}, 10%, 60%)` },
+							grid: { color: gridColor },
+							beginAtZero: true,
+							title: {
+								display: false
+							}
+						},
+						y1: {
+							position: 'right',
+							min: 0,
+							max: 100,
+							ticks: {
+								color: textColor || `hsl(${hue}, 10%, 60%)`,
+								callback: (v) => v + '%'
+							},
+							grid: { drawOnChartArea: false }
+						}
+					}
+				}
+			});
+			return;
+		}
+
+		historyChart.data.labels = historySeries.labels;
+		historyChart.data.datasets[0].data = historySeries.wpm;
+		historyChart.data.datasets[1].data = historySeries.accuracy;
+		historyChart.update();
+	});
+
+	onMount(async () => {
+		const mod = await import('chart.js/auto');
+		ChartJS = mod.default;
+	});
+
+	$effect(() => {
+		if (!multiplayerRoom) {
+			raceAnnounced = false;
+			return;
+		}
+		if (roomState === 'waiting' || roomState === 'countdown') {
+			raceAnnounced = false;
+		}
+	});
+
+	$effect(() => {
+		if (!multiplayerRoom || roomState !== 'racing' || raceAnnounced) return;
+		if (allParticipantsFinished || elapsedSeconds >= multiplayerDuration) {
+			multiplayerRoom.endRace();
+			raceAnnounced = true;
+		}
+	});
 
 	// Track if OS keyboard layout matches selected layout
 	let osLayoutValid = $state(true);
@@ -353,9 +529,13 @@
 			multiplayerRoom.updateProgress(correctChars, wpm, accuracy);
 		}
 
-		// Text mode: complete when all text is typed (solo only)
+		// Text mode: complete when all text is typed (solo only), or append more in endless mode
 		if (!multiplayerRoom && modeType === 'text' && value.length >= targetText.length && !isComplete) {
-			completeRace();
+			if (endlessMode) {
+				appendMoreText();
+			} else {
+				completeRace();
+			}
 		}
 
 		// Multiplayer: complete when text is finished
@@ -387,7 +567,11 @@
 
 		if (e.key === 'Enter' && isComplete) {
 			e.preventDefault();
-			loadNewText();
+			if (multiplayerRoom) {
+				raceAgain();
+			} else {
+				loadNewText();
+			}
 		}
 
 		if (e.key === 'Escape') {
@@ -485,6 +669,7 @@
 		startTime = null;
 		endTime = null;
 		isComplete = false;
+		endlessMode = false;
 		lastSpawnedLineIndex = 0;
 		await tick();
 		// Spawn initial background lanes and start continuous spawner
@@ -500,19 +685,19 @@
 
 	function continueTyping() {
 		isComplete = false;
-		endTime = null;
+		endlessMode = true;
 		// Append more text for continued typing
 		appendMoreText();
 		appendMoreText();
-		// Reset timer for another round
-		startTime = Date.now() - (modeType === 'time' ? 0 : 0);
+		// Keep existing startTime for continuous stats
+		if (!startTime) startTime = Date.now();
 		startTimer();
 		inputElement?.focus({ preventScroll: true });
 	}
 
 	function changeSetting(key, value) {
 		data = updateSettings({ [key]: value });
-		if (key === 'keyboardLocale' || key === 'modeType' || key === 'modeValue') {
+		if (key === 'keyboardLocale' || key === 'modeType' || key === 'modeValue' || key === 'langOverride') {
 			loadNewText();
 		}
 	}
@@ -764,7 +949,7 @@
 		const code = generateRoomCode();
 		const config = {
 			text: generateText(1),
-			duration: 60,
+			duration: modeType === 'time' ? modeValue : 60,
 			keyboard: keyboardLocale
 		};
 		await joinRoomWithCode(code, config);
@@ -775,7 +960,7 @@
 		const code = joinRoomCode.trim().toUpperCase();
 		await joinRoomWithCode(code, {
 			text: '',
-			duration: 60,
+			duration: modeType === 'time' ? modeValue : 60,
 			keyboard: keyboardLocale
 		});
 		showJoinModal = false;
@@ -796,7 +981,7 @@
 		showJoinModal = false;
 		await joinRoomWithCode(room.roomCode, {
 			text: '',
-			duration: 60,
+			duration: modeType === 'time' ? modeValue : 60,
 			keyboard: room.keyboard
 		});
 	}
@@ -825,7 +1010,8 @@
 					targetText = state.text;
 				}
 				userInput = '';
-				startTime = state.startTime;
+				startTime = state.startTime || Date.now();
+				endTime = null;
 				isComplete = false;
 				startTimer();
 			} else if (state.state === 'finished') {
@@ -946,7 +1132,7 @@
 		isComplete = true;
 		if (multiplayerRoom) {
 			multiplayerRoom.finishRace(wpm, accuracy);
-			showPublishPrompt = true;
+			publishRaceStats();
 		}
 	}
 
@@ -967,16 +1153,6 @@
 		}
 
 		publishingStats = false;
-		showPublishPrompt = false;
-	}
-
-	function skipPublish() {
-		// Still save locally, just don't publish
-		if (multiplayerRoom) {
-			const raceResult = multiplayerRoom.getRaceResult();
-			saveLocalRace(raceResult);
-		}
-		showPublishPrompt = false;
 	}
 
 	function leaveRoom() {
@@ -992,7 +1168,7 @@
 		roomState = 'waiting';
 		participants = [];
 		nostrParticipants = [];
-		showPublishPrompt = false;
+		raceAnnounced = false;
 		clearRoomFromUrl();
 		loadNewText();
 	}
@@ -1018,7 +1194,6 @@
 			userInput = '';
 			startTime = null;
 			isComplete = false;
-			showPublishPrompt = false;
 
 			// Generate new text and reset room
 			const newText = generateText(1);
@@ -1026,6 +1201,7 @@
 			multiplayerRoom.resetForNewRace(newText);
 		}
 	}
+
 
 	// Sync local races with Nostr on load (background, non-blocking)
 	async function syncRacesWithNostr() {
@@ -1060,6 +1236,13 @@
 		const handleColorSchemeChange = (e) => { darkMode = e.matches; };
 		darkModeQuery.addEventListener('change', handleColorSchemeChange);
 
+		// Track mouse position for spotlight effect
+		const handleMouseMove = (e) => {
+			mouseX = (e.clientX / window.innerWidth) * 100;
+			mouseY = (e.clientY / window.innerHeight) * 100;
+		};
+		window.addEventListener('mousemove', handleMouseMove);
+
 		data = loadData();
 		if (!data.settings.uiLanguage) {
 			data.settings.uiLanguage = detectLanguage();
@@ -1090,6 +1273,7 @@
 
 		return () => {
 			darkModeQuery.removeEventListener('change', handleColorSchemeChange);
+			window.removeEventListener('mousemove', handleMouseMove);
 			stopTimer();
 			stopLaneSpawner();
 			stopPresenceInterval();
@@ -1107,9 +1291,9 @@
 		}
 	});
 
-	// Check for time mode completion
+	// Check for time mode completion (skip in endless mode)
 	$effect(() => {
-		if (modeType === 'time' && startTime && !isComplete && remainingTime === 0) {
+		if (!multiplayerRoom && !endlessMode && modeType === 'time' && startTime && !isComplete && remainingTime === 0) {
 			completeRace();
 		}
 	});
@@ -1249,11 +1433,18 @@
 	dir={uiDir}
 	style="--font-size: {data.settings.fontSize}rem;"
 >
-	<div class="background-lanes" aria-hidden="true">
+	<div
+		class="background-lanes"
+		class:spotlight={spotlight}
+		class:dot-pattern={dotPattern}
+		style="--mouse-x: {mouseX}%; --mouse-y: {mouseY}%;"
+		aria-hidden="true"
+	>
 		{#each backgroundLanes as lane (lane.id)}
 			<div
 				class="bg-lane"
 				class:rtl={lane.direction === 'rtl'}
+				class:glow={laneGlow}
 				style="top: {lane.top}%; font-size: {lane.fontSize}rem; animation-duration: {lane.duration}s; opacity: {lane.opacity};"
 				onanimationend={() => removeLane(lane.id)}
 			>
@@ -1263,51 +1454,54 @@
 	</div>
 
 	<header class="header">
-		<div class="settings-row">
-			<button
-				class="mode-btn"
-				class:active={physicalLayout === 'ansi'}
-				onclick={() => changeSetting('physicalLayout', 'ansi')}
-			>
-				ANSI
-			</button>
-			<button
-				class="mode-btn"
-				class:active={physicalLayout === 'iso'}
-				onclick={() => changeSetting('physicalLayout', 'iso')}
-			>
-				ISO
-			</button>
+		<div class="settings-row settings-row-top" dir="ltr">
+			<span class="brand">RIGHTER</span>
+			<div class="top-controls">
+				<select
+					class="keyboard-select"
+					value={keyboardLocale}
+					onchange={(e) => changeSetting('keyboardLocale', e.target.value)}
+				>
+					{#each keyboardGroups as group}
+						<optgroup label={group.name}>
+							{#each group.keyboards as kb}
+								<option value={kb}>{languageMappings[kb].name}</option>
+							{/each}
+						</optgroup>
+					{/each}
+				</select>
 
-			<select
-				class="keyboard-select"
-				value={keyboardLocale}
-				onchange={(e) => changeSetting('keyboardLocale', e.target.value)}
-			>
-				{#each keyboardGroups as group}
-					<optgroup label={group.name}>
-						{#each group.keyboards as kb}
-							<option value={kb}>{languageMappings[kb].name}</option>
-						{/each}
-					</optgroup>
-				{/each}
-			</select>
+				<button
+					class="mode-btn"
+					class:active={physicalLayout === 'ansi'}
+					onclick={() => changeSetting('physicalLayout', 'ansi')}
+				>
+					ANSI
+				</button>
+				<button
+					class="mode-btn"
+					class:active={physicalLayout === 'iso'}
+					onclick={() => changeSetting('physicalLayout', 'iso')}
+				>
+					ISO
+				</button>
 
-			<button
-				class="mode-btn"
-				onclick={() => darkMode = !darkMode}
-				title={darkMode ? 'Light mode' : 'Dark mode'}
-			>
-				{darkMode ? '☀' : '☾'}
-			</button>
+				<button
+					class="mode-btn"
+					onclick={() => darkMode = !darkMode}
+					title={darkMode ? 'Light mode' : 'Dark mode'}
+				>
+					{darkMode ? '☼' : '☾'}
+				</button>
 
-			<button
-				class="mode-btn more-toggle"
-				onclick={() => showMoreSettings = !showMoreSettings}
-				title="More settings"
-			>
-				<span class="toggle-arrow" class:open={showMoreSettings} class:rtl={uiDir === 'rtl'}>›</span>
-			</button>
+				<button
+					class="mode-btn more-toggle"
+					onclick={() => showMoreSettings = !showMoreSettings}
+					title="More settings"
+				>
+					<span class="toggle-arrow" class:open={showMoreSettings} class:rtl={uiDir === 'rtl'}>›</span>
+				</button>
+			</div>
 		</div>
 
 		<fieldset class="settings-panel" class:open={showMoreSettings}>
@@ -1402,6 +1596,33 @@
 							oninput={(e) => changeSetting('parallaxIntensity', parseFloat(e.target.value))}
 						/>
 						<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('glow')}</span>
+						<input
+							type="checkbox"
+							checked={laneGlow}
+							onchange={(e) => changeSetting('laneGlow', e.target.checked)}
+						/>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('spotlight')}</span>
+						<input
+							type="checkbox"
+							checked={spotlight}
+							onchange={(e) => changeSetting('spotlight', e.target.checked)}
+						/>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('dotPattern')}</span>
+						<input
+							type="checkbox"
+							checked={dotPattern}
+							onchange={(e) => changeSetting('dotPattern', e.target.checked)}
+						/>
 					</label>
 					{/if}
 
@@ -1541,31 +1762,6 @@
 	</div>
 
 	{#if multiplayerRoom}
-		{@const mergedParticipants = (() => {
-			const base = [...participants];
-			const seen = new Set(base.map(p => p.odyseeId));
-			// Ensure current player is always shown
-			if (identity && !seen.has(identity.odyseeId)) {
-				base.push({
-					odyseeId: identity.odyseeId,
-					name: identity.name,
-					color: identity.color,
-					progress: correctChars,
-					wpm,
-					accuracy,
-					connected: true,
-					finished: isComplete
-				});
-				seen.add(identity.odyseeId);
-			}
-			// Always merge Nostr participants as fallback (covers slow Yjs sync)
-			for (const p of nostrParticipants) {
-				if (!seen.has(p.odyseeId)) {
-					base.push({ ...p, progress: 0, wpm: 0, connected: true, finished: false });
-				}
-			}
-			return base;
-		})()}
 		{@const displayParticipants = mergedParticipants}
 		{@const participantCount = displayParticipants.length}
 		<div class="race-track">
@@ -1584,7 +1780,7 @@
 					{:else if roomState === 'countdown'}
 						{countdown}
 					{:else if roomState === 'racing'}
-						{formatTime(Math.max(0, 60 - elapsedSeconds))}
+						{formatTime(Math.max(0, multiplayerDuration - elapsedSeconds))}
 					{:else}
 						Finished
 					{/if}
@@ -1630,25 +1826,8 @@
 						</div>
 					{/if}
 				</div>
-				{#if !showPublishPrompt}
-					<button class="btn" onclick={raceAgain}>{tr('raceAgain')}</button>
-				{/if}
+				<button class="btn" onclick={raceAgain}>{tr('raceAgain')}</button>
 			{/if}
-		</div>
-	{/if}
-
-	{#if showPublishPrompt}
-		<div class="modal-overlay">
-			<div class="modal">
-				<h3>Publish Results?</h3>
-				<p>Share your race stats to the public leaderboard?</p>
-				<div class="modal-buttons">
-					<button class="btn" onclick={publishRaceStats} disabled={publishingStats}>
-						{publishingStats ? 'Publishing...' : 'Yes, publish'}
-					</button>
-					<button class="btn" onclick={skipPublish}>No, keep private</button>
-				</div>
-			</div>
 		</div>
 	{/if}
 
@@ -1764,11 +1943,15 @@
 					</li>
 				{/each}
 			</ul>
+			<div class="history-chart">
+				<canvas bind:this={historyChartEl}></canvas>
+			</div>
 			<button class="btn-small" onclick={handleClearHistory}>{tr('clear')}</button>
 		{/if}
 	</details>
 
-	</div>
+	<div class="build-date">{__BUILD_DATE__}</div>
+</div>
 
 <style>
 	/* Background lanes - space invaders parallax effect */
@@ -1778,6 +1961,48 @@
 		overflow: hidden;
 		pointer-events: none;
 		z-index: -1;
+	}
+
+	/* Mouse-following spotlight effect (opt-in) */
+	.background-lanes.spotlight::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: radial-gradient(
+			ellipse 30% 50% at var(--mouse-x, 50%) var(--mouse-y, 50%),
+			hsla(var(--hue), 70%, 70%, 0.15) 0%,
+			hsla(var(--hue), 60%, 60%, 0.05) 40%,
+			transparent 70%
+		);
+		pointer-events: none;
+		transition: background 0.1s ease-out;
+	}
+
+	/* Inner bright core */
+	.background-lanes.spotlight::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: radial-gradient(
+			ellipse 15% 25% at var(--mouse-x, 50%) var(--mouse-y, 50%),
+			hsla(var(--hue), 80%, 80%, 0.12) 0%,
+			transparent 60%
+		);
+		pointer-events: none;
+		transition: background 0.05s ease-out;
+	}
+
+	/* Dot pattern background */
+	.background-lanes.dot-pattern {
+		background-color: var(--bg);
+		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 30%, 0.35) 1px, transparent 0);
+		background-size: 20px 20px;
+		-webkit-mask-image: linear-gradient(to right, transparent 0%, #000 30%, #000 70%, transparent 100%);
+		mask-image: linear-gradient(to right, transparent 0%, #000 30%, #000 70%, transparent 100%);
+	}
+
+	:global(.dark) .background-lanes.dot-pattern {
+		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 70%, 0.3) 1px, transparent 0);
 	}
 
 	.bg-lane {
@@ -1792,6 +2017,35 @@
 	.bg-lane.rtl {
 		animation-name: scroll-rtl;
 	}
+
+	/* Gradient glow effect (opt-in) */
+	.bg-lane.glow {
+		background: linear-gradient(
+			90deg,
+			hsla(var(--hue), 40%, 45%, 0) 0%,
+			hsl(var(--hue), 50%, 45%) 10%,
+			hsl(var(--hue), 70%, 55%) 50%,
+			hsl(var(--hue), 50%, 45%) 90%,
+			hsla(var(--hue), 40%, 45%, 0) 100%
+		);
+		background-clip: text;
+		-webkit-background-clip: text;
+		color: transparent;
+	}
+
+	.bg-lane.glow.rtl {
+		background: linear-gradient(
+			-90deg,
+			hsla(var(--hue), 40%, 45%, 0) 0%,
+			hsl(var(--hue), 50%, 45%) 10%,
+			hsl(var(--hue), 70%, 55%) 50%,
+			hsl(var(--hue), 50%, 45%) 90%,
+			hsla(var(--hue), 40%, 45%, 0) 100%
+		);
+		background-clip: text;
+		-webkit-background-clip: text;
+	}
+
 
 	/* LTR text moves right-to-left - travel full width + 200vw buffer for giant text */
 	@keyframes scroll-ltr {
@@ -1810,27 +2064,51 @@
 		flex-direction: column;
 		gap: 0;
 		overflow: hidden;
+		margin: 0;
 	}
 
 	.settings-row {
 		display: flex;
 		align-items: center;
-		gap: 0.375rem;
+		gap: 0.5rem 1rem;
+		flex-wrap: wrap;
+	}
+
+	.settings-row.settings-row-top {
+		gap: 0.3rem;
+		justify-content: space-between;
+		font-family: system-ui, -apple-system, sans-serif;
+	}
+
+	.brand {
+		font-family: system-ui, -apple-system, sans-serif;
+		font-weight: 900;
+		font-size: 1.5rem;
+		letter-spacing: 0.15em;
+		color: var(--text-muted);
+	}
+
+	.top-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
 		flex-wrap: wrap;
 	}
 
 	.settings-panel {
+		display: none;
 		max-height: 0;
 		overflow: hidden;
 		opacity: 0;
-		transition: max-height 0.25s ease-out, opacity 0.2s ease-out, margin-top 0.25s ease-out, padding 0.25s ease-out;
 		margin: 0;
 		padding: 0;
 		border: 1px solid transparent;
 		border-radius: 0.25rem;
+		min-inline-size: 0;
 	}
 
 	.settings-panel.open {
+		display: block;
 		max-height: 80vh;
 		overflow-y: auto;
 		opacity: 1;
@@ -1843,6 +2121,7 @@
 		font-size: 0.625rem;
 		color: var(--text-muted);
 		padding: 0 0.25rem;
+		margin: 0;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 	}
@@ -2143,9 +2422,13 @@
 
 	.text-display {
 		position: relative;
-		min-height: calc(var(--font-size) * 8);
-		max-height: 45vh;
+		min-height: calc(var(--font-size) * 5);
+		max-height: clamp(7rem, calc(100vh - 26rem), 32vh);
 		overflow: hidden;
+		background: var(--bg-card-alpha);
+		border: 1px solid var(--border);
+		border-radius: 0.25rem;
+		padding: 0.75rem 1rem;
 	}
 
 	.text-credit {
@@ -2280,6 +2563,7 @@
 		user-select: none;
 		transition: border-color 0.05s ease-out, box-shadow 0.05s ease-out;
 	}
+
 
 	.keyboard.layout-mismatch {
 		border-color: var(--error);
@@ -2447,8 +2731,14 @@
 	}
 
 	.history-panel .btn-small {
-		float: inline-end;
-		margin-top: 0.5rem;
+		display: block;
+		margin-top: 0.75rem;
+		margin-inline-start: auto;
+	}
+
+	.history-chart {
+		margin-top: 0.75rem;
+		height: 180px;
 	}
 
 	.history-list {
@@ -2740,5 +3030,18 @@
 	/* Parallax - hide background lanes when disabled */
 	.app:not(.parallax) .background-lanes {
 		display: none;
+	}
+
+	.build-date {
+		flex-grow: 1;
+		display: flex;
+		align-items: flex-end;
+		justify-content: center;
+		min-height: 0;
+		font-size: 0.625rem;
+		line-height: 1;
+		color: var(--text-muted);
+		opacity: 0.4;
+		font-family: ui-monospace, monospace;
 	}
 </style>

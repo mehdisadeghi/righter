@@ -27,7 +27,7 @@ preview:
 	$(BUN) run preview
 
 fmt:
-	$(BUN) x prettier --write .
+	$(BUN) x prettier --write "src/**" "*.js" "*.json"
 
 clean:
 	rm -rf build .svelte-kit node_modules/.vite

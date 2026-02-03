@@ -1,5 +1,6 @@
 import khayyamFa from '$lib/data/khayyam_fa.yaml';
 import khayyamEn from '$lib/data/khayyam_en.yaml';
+import khayyamDe from '$lib/data/khayyam_de.yaml';
 
 function parseTexts(data) {
 	if (!data.texts) return [];
@@ -30,6 +31,7 @@ function extractMeta(data) {
 
 const textsFA = parseTexts(khayyamFa);
 const textsEN = parseTexts(khayyamEn);
+const textsDE = parseTexts(khayyamDe);
 
 export const texts = {
 	fa: {
@@ -43,12 +45,19 @@ export const texts = {
 		medium: [],
 		hard: [],
 		expert: []
+	},
+	de: {
+		easy: textsDE,
+		medium: [],
+		hard: [],
+		expert: []
 	}
 };
 
 export const textMeta = {
 	fa: extractMeta(khayyamFa),
-	en: extractMeta(khayyamEn)
+	en: extractMeta(khayyamEn),
+	de: extractMeta(khayyamDe)
 };
 
 export function getRandomTextItem(lang, difficulty = 'easy') {

@@ -12,7 +12,10 @@ const defaultSettings = {
 	errorReplace: false,
 	langOverride: '',
 	parallax: true,
-	parallaxIntensity: 1.0,
+	parallaxIntensity: 1.5,
+	laneGlow: false,
+	spotlight: false,
+	dotPattern: true,
 	// Relay settings - reliable public relays
 	nostrRelays: [
 		'wss://relay.damus.io',
