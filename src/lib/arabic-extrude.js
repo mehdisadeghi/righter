@@ -6,6 +6,71 @@ const fontCache = new Map();
 let fontLoadPromise = null;
 
 /**
+ * Handle text with ZWNJ by processing segments with correct RTL positioning
+ * OpenType.js has bidi issues with ZWNJ that cause segments to appear in wrong order
+ */
+function getPathWithZWNJ(font, text, fontSize) {
+	// Split at ZWNJ while keeping track of positions
+	const segments = text.split('\u200C');
+
+	// For RTL: calculate total width first, then position segments right-to-left
+	const segmentPaths = segments.map(seg => ({
+		text: seg,
+		path: font.getPath(seg, 0, 0, fontSize),
+	}));
+
+	// Calculate widths
+	segmentPaths.forEach(sp => {
+		const bbox = sp.path.getBoundingBox();
+		sp.width = bbox.x2 - bbox.x1;
+		sp.bbox = bbox;
+	});
+
+	// Total width (sum of all segments)
+	const totalWidth = segmentPaths.reduce((sum, sp) => sum + sp.width, 0);
+
+	// Position segments RTL: first segment on right, subsequent to the left
+	// Start from right edge (totalWidth) and work left
+	let xPos = totalWidth;
+
+	// Combine all commands with adjusted X positions
+	const combinedCommands = [];
+
+	for (const sp of segmentPaths) {
+		// Position this segment: its right edge should be at xPos
+		const offsetX = xPos - sp.bbox.x2;
+
+		for (const cmd of sp.path.commands) {
+			const newCmd = { ...cmd };
+			if (newCmd.x !== undefined) newCmd.x += offsetX;
+			if (newCmd.x1 !== undefined) newCmd.x1 += offsetX;
+			if (newCmd.x2 !== undefined) newCmd.x2 += offsetX;
+			combinedCommands.push(newCmd);
+		}
+
+		// Move left for next segment
+		xPos -= sp.width;
+	}
+
+	// Return a path-like object with combined commands
+	return {
+		commands: combinedCommands,
+		getBoundingBox: () => {
+			let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+			for (const cmd of combinedCommands) {
+				if (cmd.x !== undefined) { x1 = Math.min(x1, cmd.x); x2 = Math.max(x2, cmd.x); }
+				if (cmd.y !== undefined) { y1 = Math.min(y1, cmd.y); y2 = Math.max(y2, cmd.y); }
+				if (cmd.x1 !== undefined) { x1 = Math.min(x1, cmd.x1); x2 = Math.max(x2, cmd.x1); }
+				if (cmd.y1 !== undefined) { y1 = Math.min(y1, cmd.y1); y2 = Math.max(y2, cmd.y1); }
+				if (cmd.x2 !== undefined) { x1 = Math.min(x1, cmd.x2); x2 = Math.max(x2, cmd.x2); }
+				if (cmd.y2 !== undefined) { y1 = Math.min(y1, cmd.y2); y2 = Math.max(y2, cmd.y2); }
+			}
+			return { x1, y1, x2, y2 };
+		}
+	};
+}
+
+/**
  * Load an OpenType font from URL
  */
 export async function loadFont(url) {
@@ -97,20 +162,19 @@ export function createArabicExtrudedText(font, text, fontSize, depth, options = 
 	// Scale factor: opentype uses font units, we want pixels
 	const scale = fontSize / font.unitsPerEm;
 
-	// Get the full path for the text (opentype handles Arabic shaping internally)
-	const path = font.getPath(text, 0, 0, fontSize);
-
-	// Get bounding box for centering
-	const bbox = path.getBoundingBox();
-	const textWidth = bbox.x2 - bbox.x1;
-	const textHeight = bbox.y2 - bbox.y1;
+	// Handle ZWNJ: OpenType.js has bidi issues with ZWNJ, so we process segments
+	// and combine them with correct RTL positioning
+	let path;
+	if (text.includes('\u200C')) {
+		path = getPathWithZWNJ(font, text, fontSize);
+	} else {
+		path = font.getPath(text, 0, 0, fontSize);
+	}
 
 	// Convert the full path to shapes
-	// For complex scripts, we need to handle the path as a whole
 	const shapes = pathToShapes(path);
 
 	if (shapes.length === 0) {
-		console.warn('No shapes generated for text:', text);
 		return null;
 	}
 
@@ -187,13 +251,13 @@ function pathToShapes(path) {
 		};
 	});
 
-	// Separate into outer shapes (clockwise after Y-flip) and potential holes (counter-clockwise)
-	// Dots are small clockwise contours - do NOT filter by area
+	// Separate into outer shapes (clockwise after Y-flip) and potential holes
+	// Dots are small outer contours - do NOT filter by area
 	const outerContours = [];
 	const holeContours = [];
 
 	for (const pc of processedContours) {
-		// After Y-flip: clockwise = filled shapes (letters + dots), counter-clockwise = holes
+		// After Y-flip: clockwise = filled shapes, counter-clockwise = holes
 		if (pc.isClockwise) {
 			outerContours.push(pc);
 		} else {
@@ -201,22 +265,34 @@ function pathToShapes(path) {
 		}
 	}
 
-	// Sort outer contours by area (largest first) for hole assignment
-	outerContours.sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+	// Create a lookup for hole assignment (sorted by area, largest first)
+	const sortedForHoles = [...outerContours].sort((a, b) => Math.abs(b.area) - Math.abs(a.area));
+	const holeAssignments = new Map();
 
-	// Create shapes from all outer contours (including small dots)
+	// Assign holes to their containing shapes (largest shape wins)
+	for (const hole of holeContours) {
+		const holeBbox = getContourBBox(hole.contour);
+		for (const outer of sortedForHoles) {
+			const outerBbox = getContourBBox(outer.contour);
+			if (bboxContains(outerBbox, holeBbox)) {
+				if (!holeAssignments.has(outer)) {
+					holeAssignments.set(outer, []);
+				}
+				holeAssignments.get(outer).push(hole);
+				break; // Assign to first (largest) containing shape
+			}
+		}
+	}
+
+	// Create shapes preserving original contour order (important for text layout)
 	for (const outer of outerContours) {
 		const shape = contourToShape(outer.contour);
 		if (shape) {
-			// Find holes that belong to this shape (counter-clockwise contours inside this one)
-			const bbox = getContourBBox(outer.contour);
-			for (const hole of holeContours) {
-				const holeBbox = getContourBBox(hole.contour);
-				if (bboxContains(bbox, holeBbox)) {
-					const holePath = contourToPath(hole.contour);
-					if (holePath) {
-						shape.holes.push(holePath);
-					}
+			const holes = holeAssignments.get(outer) || [];
+			for (const hole of holes) {
+				const holePath = contourToPath(hole.contour);
+				if (holePath) {
+					shape.holes.push(holePath);
 				}
 			}
 			shapes.push(shape);

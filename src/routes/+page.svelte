@@ -1,6 +1,7 @@
 <script>
 	import { onMount, tick } from 'svelte';
 	import { base } from '$app/paths';
+	import { replaceState } from '$app/navigation';
 	import { t, getDirection, supportedLanguages } from '$lib/i18n.js';
 	import { getRandomTextItem, getTextMeta, getTextCount, getTextByNumber } from '$lib/texts.js';
 	import { buildKeyboard, languageMappings, keyboardGroups, isRTL } from '$lib/keyboards/index.js';
@@ -178,7 +179,7 @@
 		if (currentTextItem?.number) params.set('q', currentTextItem.number);
 
 		const newUrl = params.toString() ? `${window.location.pathname}?${params}` : window.location.pathname;
-		window.history.replaceState({}, '', newUrl);
+		replaceState(newUrl, {});
 	}
 
 	// Track current quatrain number for URL

@@ -867,7 +867,9 @@ export class Parallax3DRenderer {
 		const depthRand = Math.random();
 
 		const fontSize = 20 + Math.pow(sizeRand, 2) * 80 * intensity;
-		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity;
+		// Light mode needs higher opacity for visibility against light background
+		const opacityMultiplier = this.isDark ? 1 : 2.5;
+		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier;
 
 		let mesh;
 		let texture = null;
