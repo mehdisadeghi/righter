@@ -13,8 +13,10 @@ const defaultSettings = {
 	langOverride: '',
 	parallax: true,
 	parallaxIntensity: 1.5,
-	laneGlow: false,
-	spotlight: false,
+	parallax3d: false,
+	parallax3dEffect: 'none',
+	parallax3dTexture: 'solid',
+	parallax3dRainbow: false,
 	dotPattern: true,
 	// Relay settings - reliable public relays
 	nostrRelays: [

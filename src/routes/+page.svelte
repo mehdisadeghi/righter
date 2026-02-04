@@ -20,6 +20,7 @@
 	import { publishRace, fetchMyRaces, publishRoomPresence, fetchActiveRooms, fetchRoomParticipants, DEFAULT_RELAYS } from '$lib/nostr.js';
 	import { fetchFastRelays } from '$lib/relay-discovery.js';
 	import { mergeRaceLists, findMissingRaces } from '$lib/crdt.js';
+	import { isWebGLAvailable, Parallax3DRenderer } from '$lib/parallax3d.js';
 
 	const MODES = {
 		time: [15, 30, 60, 120],
@@ -63,16 +64,19 @@
 	let laneSpawnInterval = $state(null);
 	const LANE_POOL_SIZE = 15;
 
+	// Three.js 3D parallax renderer
+	let parallax3dRenderer = $state(null);
+	let parallax3dContainer = $state(null);
+	let webglAvailable = $state(false);
+
 	// Settings panel toggle
 	let showMoreSettings = $state(false);
+	// Will be loaded from sessionStorage on mount
 	let customModeValue = $state('');
 
 	// Dark mode (session only, defaults to OS preference)
 	let darkMode = $state(false);
 
-	// Mouse position for spotlight effect
-	let mouseX = $state(50);
-	let mouseY = $state(50);
 
 	// Sync dark mode and hue to document root for body/background styles
 	$effect(() => {
@@ -122,8 +126,10 @@
 	let errorReplace = $derived(data.settings.errorReplace || false);
 	let parallax = $derived(data.settings.parallax !== false);
 	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.0);
-	let laneGlow = $derived(data.settings.laneGlow === true);
-	let spotlight = $derived(data.settings.spotlight === true);
+	let parallax3d = $derived(data.settings.parallax3d === true);
+	let parallax3dEffect = $derived(data.settings.parallax3dEffect || 'none');
+	let parallax3dTexture = $derived(data.settings.parallax3dTexture || 'solid');
+	let parallax3dRainbow = $derived(data.settings.parallax3dRainbow === true);
 	let dotPattern = $derived(data.settings.dotPattern !== false);
 	let keyboard = $derived(buildKeyboard(physicalLayout, keyboardLocale));
 	let keyboardMapping = $derived(languageMappings[keyboardLocale]);
@@ -698,6 +704,17 @@
 	function changeSetting(key, value) {
 		data = updateSettings({ [key]: value });
 		if (key === 'keyboardLocale' || key === 'modeType' || key === 'modeValue' || key === 'langOverride') {
+			// Stop spawner and clear lanes before loading new text
+			// This prevents spawning wrong-language text during the async load
+			stopLaneSpawner();
+			backgroundLanes = [];
+			if (parallax3dRenderer) {
+				parallax3dRenderer.clearAllLanes();
+				// Update renderer RTL setting immediately before spawning new lanes
+				if (key === 'keyboardLocale') {
+					parallax3dRenderer.updateSettings({ isRTL: isRTL(value) });
+				}
+			}
 			loadNewText();
 		}
 	}
@@ -1230,18 +1247,30 @@
 	}
 
 	onMount(async () => {
-		// Detect OS dark mode preference and listen for changes
+		// Settings panel: check sessionStorage
+		const storedSettingsOpen = sessionStorage.getItem('settingsOpen');
+		if (storedSettingsOpen !== null) {
+			showMoreSettings = storedSettingsOpen === 'true';
+		}
+
+		// Dark mode: check sessionStorage first, then OS preference
 		const darkModeQuery = window.matchMedia('(prefers-color-scheme: dark)');
-		darkMode = darkModeQuery.matches;
-		const handleColorSchemeChange = (e) => { darkMode = e.matches; };
+		const storedDarkMode = sessionStorage.getItem('darkMode');
+		if (storedDarkMode !== null) {
+			darkMode = storedDarkMode === 'true';
+		} else {
+			darkMode = darkModeQuery.matches;
+		}
+		// Only follow OS changes if user hasn't manually set preference this session
+		const handleColorSchemeChange = (e) => {
+			if (sessionStorage.getItem('darkMode') === null) {
+				darkMode = e.matches;
+			}
+		};
 		darkModeQuery.addEventListener('change', handleColorSchemeChange);
 
-		// Track mouse position for spotlight effect
-		const handleMouseMove = (e) => {
-			mouseX = (e.clientX / window.innerWidth) * 100;
-			mouseY = (e.clientY / window.innerHeight) * 100;
-		};
-		window.addEventListener('mousemove', handleMouseMove);
+		// Check WebGL availability for 3D parallax
+		webglAvailable = isWebGLAvailable();
 
 		data = loadData();
 		if (!data.settings.uiLanguage) {
@@ -1273,13 +1302,16 @@
 
 		return () => {
 			darkModeQuery.removeEventListener('change', handleColorSchemeChange);
-			window.removeEventListener('mousemove', handleMouseMove);
 			stopTimer();
 			stopLaneSpawner();
 			stopPresenceInterval();
 			stopConnectionCheck();
 			if (multiplayerRoom) {
 				multiplayerRoom.destroy();
+			}
+			if (parallax3dRenderer) {
+				parallax3dRenderer.dispose();
+				parallax3dRenderer = null;
 			}
 		};
 	});
@@ -1344,7 +1376,14 @@
 
 	// Spawn a single background lane with diversity
 	// Base values, scaled by parallaxIntensity setting
-	function spawnLane(text, direction) {
+	function spawnLane(text, direction, initialProgress = 0) {
+		// Use Three.js renderer if available and enabled
+		if (parallax3dRenderer) {
+			parallax3dRenderer.spawnLane(text, direction, initialProgress);
+			return;
+		}
+
+		// DOM-based fallback
 		const intensity = parallaxIntensity;
 		const sizeRand = Math.random();
 		const speedRand = Math.random();
@@ -1384,16 +1423,22 @@
 
 	function startLaneSpawner() {
 		if (laneSpawnInterval) return;
-		// Use fixed base interval, intensity affects pool size and spawn rate dynamically
-		laneSpawnInterval = setInterval(() => {
+
+		// Spawner function - also used for immediate first spawn
+		const trySpawn = () => {
 			const poolSize = Math.round(LANE_POOL_SIZE * parallaxIntensity);
-			// Skip some spawns at low intensity, spawn extra at high intensity
 			const spawnChance = parallaxIntensity;
-			if (backgroundLanes.length < poolSize && Math.random() < spawnChance) {
+			const currentCount = parallax3dRenderer
+				? parallax3dRenderer.getLaneCount()
+				: backgroundLanes.length;
+			if (currentCount < poolSize && Math.random() < spawnChance) {
 				const text = getCurrentLaneText();
 				if (text) spawnLane(text, textDir);
 			}
-		}, 400);
+		};
+
+		// Use fixed base interval, intensity affects pool size and spawn rate dynamically
+		laneSpawnInterval = setInterval(trySpawn, 400);
 	}
 
 	function stopLaneSpawner() {
@@ -1417,6 +1462,62 @@
 		}
 	});
 
+	// Three.js 3D parallax renderer management
+	$effect(() => {
+		const shouldUse3d = parallax && parallax3d && webglAvailable && parallax3dContainer;
+
+		if (shouldUse3d && !parallax3dRenderer) {
+			parallax3dRenderer = new Parallax3DRenderer(parallax3dContainer, {
+				intensity: parallaxIntensity,
+				hue: data.settings.hue,
+				isDark: darkMode,
+				isRTL: textDir === 'rtl',
+				effect: parallax3dEffect,
+				texture: parallax3dTexture,
+				rainbow: parallax3dRainbow
+			});
+			// Initial burst: spawn fewer lanes at earlier progress so they fade in gradually
+			const burstCount = Math.round(LANE_POOL_SIZE * parallaxIntensity * 0.5);
+			for (let i = 0; i < burstCount; i++) {
+				const text = getCurrentLaneText();
+				if (text) {
+					// Spread progress from 0.0 to 0.4 - lines start further back in fog
+					const progress = (i / burstCount) * 0.4;
+					spawnLane(text, textDir, progress);
+				}
+			}
+		} else if (!shouldUse3d && parallax3dRenderer) {
+			parallax3dRenderer.dispose();
+			parallax3dRenderer = null;
+		}
+	});
+
+	// Update Three.js renderer settings when they change
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.updateSettings({
+				intensity: parallaxIntensity,
+				hue: data.settings.hue,
+				isDark: darkMode,
+				isRTL: textDir === 'rtl',
+				effect: parallax3dEffect,
+				texture: parallax3dTexture,
+				rainbow: parallax3dRainbow
+			});
+		}
+	});
+
+	// Clean up all parallax resources when disabled
+	$effect(() => {
+		if (!parallax) {
+			// Stop spawning new lanes
+			stopLaneSpawner();
+			// Clear DOM-based lanes
+			backgroundLanes = [];
+			// 3D renderer cleanup is handled by the separate effect above
+		}
+	});
+
 </script>
 
 <svelte:head>
@@ -1433,18 +1534,26 @@
 	dir={uiDir}
 	style="--font-size: {data.settings.fontSize}rem;"
 >
+	<!-- Background effects layer (dots) - always visible when parallax enabled -->
+	<div
+		class="background-effects"
+		class:dot-pattern={dotPattern}
+		aria-hidden="true"
+	></div>
+
+	<!-- Three.js 3D container (renders when 3D parallax is enabled) -->
+	<div bind:this={parallax3dContainer} class="parallax3d-container" aria-hidden="true"></div>
+
+	<!-- DOM-based background lanes (fallback when 3D is disabled) -->
 	<div
 		class="background-lanes"
-		class:spotlight={spotlight}
-		class:dot-pattern={dotPattern}
-		style="--mouse-x: {mouseX}%; --mouse-y: {mouseY}%;"
+		class:hidden={parallax3dRenderer}
 		aria-hidden="true"
 	>
 		{#each backgroundLanes as lane (lane.id)}
 			<div
 				class="bg-lane"
 				class:rtl={lane.direction === 'rtl'}
-				class:glow={laneGlow}
 				style="top: {lane.top}%; font-size: {lane.fontSize}rem; animation-duration: {lane.duration}s; opacity: {lane.opacity};"
 				onanimationend={() => removeLane(lane.id)}
 			>
@@ -1488,7 +1597,10 @@
 
 				<button
 					class="mode-btn"
-					onclick={() => darkMode = !darkMode}
+					onclick={() => {
+						darkMode = !darkMode;
+						sessionStorage.setItem('darkMode', darkMode);
+					}}
 					title={darkMode ? 'Light mode' : 'Dark mode'}
 				>
 					{darkMode ? '☼' : '☾'}
@@ -1496,7 +1608,10 @@
 
 				<button
 					class="mode-btn more-toggle"
-					onclick={() => showMoreSettings = !showMoreSettings}
+					onclick={() => {
+						showMoreSettings = !showMoreSettings;
+						sessionStorage.setItem('settingsOpen', showMoreSettings);
+					}}
 					title="More settings"
 				>
 					<span class="toggle-arrow" class:open={showMoreSettings} class:rtl={uiDir === 'rtl'}>›</span>
@@ -1585,6 +1700,57 @@
 					</label>
 
 					{#if parallax}
+					{#if webglAvailable}
+					<label class="setting-item" title="Use WebGL 3D rendering">
+						<span class="setting-label">{tr('parallax3d')}</span>
+						<input
+							type="checkbox"
+							checked={parallax3d}
+							onchange={(e) => changeSetting('parallax3d', e.target.checked)}
+						/>
+					</label>
+					{#if parallax3d}
+					<label class="setting-item" title="3D text effect">
+						<span class="setting-label">{tr('parallax3dEffect')}</span>
+						<select
+							class="setting-select"
+							value={parallax3dEffect}
+							onchange={(e) => changeSetting('parallax3dEffect', e.target.value)}
+						>
+							<option value="none">{tr('effect_none')}</option>
+							<option value="outline">{tr('effect_outline')}</option>
+							<option value="shadow">{tr('effect_shadow')}</option>
+							<option value="emboss">{tr('effect_emboss')}</option>
+							<option value="extrude">{tr('effect_extrude')}</option>
+							<option value="neon">{tr('effect_neon')}</option>
+						</select>
+					</label>
+
+					<label class="setting-item" title="Text texture style">
+						<span class="setting-label">{tr('parallax3dTexture')}</span>
+						<select
+							class="setting-select"
+							value={parallax3dTexture}
+							onchange={(e) => changeSetting('parallax3dTexture', e.target.value)}
+						>
+							<option value="solid">{tr('texture_solid')}</option>
+							<option value="gradient">{tr('texture_gradient')}</option>
+							<option value="metallic">{tr('texture_metallic')}</option>
+							<option value="glass">{tr('texture_glass')}</option>
+						</select>
+					</label>
+
+					<label class="setting-item" title="Rainbow colors for each letter">
+						<span class="setting-label">{tr('rainbow')}</span>
+						<input
+							type="checkbox"
+							checked={parallax3dRainbow}
+							onchange={(e) => changeSetting('parallax3dRainbow', e.target.checked)}
+						/>
+					</label>
+					{/if}
+					{/if}
+
 					<label class="setting-item" title={tr('intensity')}>
 						<span class="setting-label">{tr('intensity')}</span>
 						<input
@@ -1598,23 +1764,7 @@
 						<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
 					</label>
 
-					<label class="setting-item">
-						<span class="setting-label">{tr('glow')}</span>
-						<input
-							type="checkbox"
-							checked={laneGlow}
-							onchange={(e) => changeSetting('laneGlow', e.target.checked)}
-						/>
-					</label>
-
-					<label class="setting-item">
-						<span class="setting-label">{tr('spotlight')}</span>
-						<input
-							type="checkbox"
-							checked={spotlight}
-							onchange={(e) => changeSetting('spotlight', e.target.checked)}
-						/>
-					</label>
+					{/if}
 
 					<label class="setting-item">
 						<span class="setting-label">{tr('dotPattern')}</span>
@@ -1624,7 +1774,6 @@
 							onchange={(e) => changeSetting('dotPattern', e.target.checked)}
 						/>
 					</label>
-					{/if}
 
 					<label class="setting-item" title={tr('langOverride')}>
 						<span class="setting-label">{tr('language')}</span>
@@ -1954,6 +2103,22 @@
 </div>
 
 <style>
+	/* Background effects layer (dots) */
+	.background-effects {
+		position: fixed;
+		inset: 0;
+		pointer-events: none;
+		z-index: -3;
+	}
+
+	/* Three.js 3D parallax container */
+	.parallax3d-container {
+		position: fixed;
+		inset: 0;
+		pointer-events: none;
+		z-index: -2;
+	}
+
 	/* Background lanes - space invaders parallax effect */
 	.background-lanes {
 		position: fixed;
@@ -1963,37 +2128,12 @@
 		z-index: -1;
 	}
 
-	/* Mouse-following spotlight effect (opt-in) */
-	.background-lanes.spotlight::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: radial-gradient(
-			ellipse 30% 50% at var(--mouse-x, 50%) var(--mouse-y, 50%),
-			hsla(var(--hue), 70%, 70%, 0.15) 0%,
-			hsla(var(--hue), 60%, 60%, 0.05) 40%,
-			transparent 70%
-		);
-		pointer-events: none;
-		transition: background 0.1s ease-out;
-	}
-
-	/* Inner bright core */
-	.background-lanes.spotlight::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: radial-gradient(
-			ellipse 15% 25% at var(--mouse-x, 50%) var(--mouse-y, 50%),
-			hsla(var(--hue), 80%, 80%, 0.12) 0%,
-			transparent 60%
-		);
-		pointer-events: none;
-		transition: background 0.05s ease-out;
+	.background-lanes.hidden {
+		display: none;
 	}
 
 	/* Dot pattern background */
-	.background-lanes.dot-pattern {
+	.background-effects.dot-pattern {
 		background-color: var(--bg);
 		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 30%, 0.35) 1px, transparent 0);
 		background-size: 20px 20px;
@@ -2001,7 +2141,7 @@
 		mask-image: linear-gradient(to right, transparent 0%, #000 30%, #000 70%, transparent 100%);
 	}
 
-	:global(.dark) .background-lanes.dot-pattern {
+	:global(.dark) .background-effects.dot-pattern {
 		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 70%, 0.3) 1px, transparent 0);
 	}
 
@@ -2018,34 +2158,6 @@
 		animation-name: scroll-rtl;
 	}
 
-	/* Gradient glow effect (opt-in) */
-	.bg-lane.glow {
-		background: linear-gradient(
-			90deg,
-			hsla(var(--hue), 40%, 45%, 0) 0%,
-			hsl(var(--hue), 50%, 45%) 10%,
-			hsl(var(--hue), 70%, 55%) 50%,
-			hsl(var(--hue), 50%, 45%) 90%,
-			hsla(var(--hue), 40%, 45%, 0) 100%
-		);
-		background-clip: text;
-		-webkit-background-clip: text;
-		color: transparent;
-	}
-
-	.bg-lane.glow.rtl {
-		background: linear-gradient(
-			-90deg,
-			hsla(var(--hue), 40%, 45%, 0) 0%,
-			hsl(var(--hue), 50%, 45%) 10%,
-			hsl(var(--hue), 70%, 55%) 50%,
-			hsl(var(--hue), 50%, 45%) 90%,
-			hsla(var(--hue), 40%, 45%, 0) 100%
-		);
-		background-clip: text;
-		-webkit-background-clip: text;
-	}
-
 
 	/* LTR text moves right-to-left - travel full width + 200vw buffer for giant text */
 	@keyframes scroll-ltr {
@@ -2053,10 +2165,10 @@
 		to { transform: translateX(calc(-100% - 200vw)); }
 	}
 
-	/* RTL text moves left-to-right - travel full width + 200vw buffer for giant text */
+	/* RTL text moves left-to-right - start just off left edge, exit right */
 	@keyframes scroll-rtl {
-		from { transform: translateX(calc(-100% - 200vw)); }
-		to { transform: translateX(100vw); }
+		from { transform: translateX(-100%); }
+		to { transform: translateX(calc(100vw + 200vw)); }
 	}
 
 	.header {
@@ -3027,8 +3139,9 @@
 		color: var(--text-muted);
 	}
 
-	/* Parallax - hide background lanes when disabled */
-	.app:not(.parallax) .background-lanes {
+	/* Parallax - hide animated background elements when disabled (dots stay visible) */
+	.app:not(.parallax) .background-lanes,
+	.app:not(.parallax) .parallax3d-container {
 		display: none;
 	}
 
