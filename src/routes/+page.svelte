@@ -43,6 +43,28 @@
 		{ id: 'system', family: 'system-ui, sans-serif' }
 	];
 
+	// Finger indices: 0=left pinky, 1=left ring, 2=left middle, 3=left index, 4=left thumb
+	//                 5=right thumb, 6=right index, 7=right middle, 8=right ring, 9=right pinky
+	const KEY_TO_FINGER = {
+		// Number row
+		Backquote: 0, Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 3,
+		Digit6: 6, Digit7: 6, Digit8: 7, Digit9: 8, Digit0: 9, Minus: 9, Equal: 9, Backspace: 9,
+		// Top letter row
+		Tab: 0, KeyQ: 0, KeyW: 1, KeyE: 2, KeyR: 3, KeyT: 3,
+		KeyY: 6, KeyU: 6, KeyI: 7, KeyO: 8, KeyP: 9, BracketLeft: 9, BracketRight: 9, Backslash: 9,
+		// Home row
+		CapsLock: 0, KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyG: 3,
+		KeyH: 6, KeyJ: 6, KeyK: 7, KeyL: 8, Semicolon: 9, Quote: 9, Enter: 9,
+		// Bottom row
+		ShiftLeft: 0, IntlBackslash: 0, KeyZ: 0, KeyX: 1, KeyC: 2, KeyV: 3, KeyB: 3,
+		KeyN: 6, KeyM: 6, Comma: 7, Period: 8, Slash: 9, ShiftRight: 9,
+		// Space row
+		ControlLeft: 0, MetaLeft: 4, AltLeft: 4, Space: 5, AltRight: 5, MetaRight: 5, ContextMenu: 9, ControlRight: 9
+	};
+
+	const FINGER_NAMES = ['left-pinky', 'left-ring', 'left-middle', 'left-index', 'left-thumb',
+		'right-thumb', 'right-index', 'right-middle', 'right-ring', 'right-pinky'];
+
 	// Reliable public relays (curated list with good uptime)
 	const RECOMMENDED_RELAYS = [
 		'wss://relay.damus.io',
@@ -54,7 +76,7 @@
 	];
 
 	let data = $state({
-		settings: { uiLanguage: 'en', keyboardLocale: 'en-US', fontSize: 1.25, hue: 220, modeType: 'time', modeValue: 30, physicalLayout: 'ansi', showTyped: false },
+		settings: { uiLanguage: 'en', keyboardLocale: 'en-US', fontSize: 1.25, hue: 220, modeType: 'time', modeValue: 30, physicalLayout: 'ansi', showTyped: false, showHands: true },
 		history: [],
 		customTexts: { fa: '', en: '' }
 	});
@@ -223,6 +245,7 @@
 	let parallax = $derived(data.settings.parallax !== false);
 	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.5);
 	let parallax3d = $derived(data.settings.parallax3d === true);
+	let showHands = $derived(data.settings.showHands === true);
 	let parallax3dEffect = $derived(data.settings.parallax3dEffect || 'none');
 	let parallax3dTexture = $derived(data.settings.parallax3dTexture || 'solid');
 	let parallax3dRainbow = $derived(data.settings.parallax3dRainbow === true);
@@ -292,6 +315,18 @@
 	// Next expected key
 	let nextChar = $derived(targetText[userInput.length] || null);
 	let nextKey = $derived(nextChar ? charToKey.get(nextChar) : null);
+	let expectedFinger = $derived(nextKey ? KEY_TO_FINGER[nextKey.code] : null);
+	let expectedModifierFinger = $derived.by(() => {
+		if (!nextKey) return null;
+		// If shift is needed (level 1), use the opposite hand's pinky
+		if (nextKey.level === 1) {
+			const keyFinger = KEY_TO_FINGER[nextKey.code];
+			return keyFinger <= 4 ? 9 : 0; // right shift for left-hand keys, left shift for right-hand keys
+		}
+		// If altgr is needed (level 2), use right thumb
+		if (nextKey.level === 2) return 5;
+		return null;
+	});
 
 	// Split text into lines for scrolling display
 	let lines = $derived(targetText.split('\n'));
@@ -1862,6 +1897,15 @@
 						/>
 					</label>
 
+					<label class="setting-item" title="Show finger hints on keyboard">
+						<span class="setting-label">{tr('showHands')}</span>
+						<input
+							type="checkbox"
+							checked={showHands}
+							onchange={(e) => changeSetting('showHands', e.target.checked)}
+						/>
+					</label>
+
 					{#if parallax}
 					{#if webglAvailable}
 					<label class="setting-item" title="Use WebGL 3D rendering">
@@ -2095,32 +2139,67 @@
 		</div>
 	</div>
 
-	<div class="keyboard" class:layout-mismatch={layoutMismatch} dir="ltr">
-		{#each keyboard.rows as row}
-			<div class="keyboard-row">
-				{#each row.keys as key}
-					{@const isPressed = pressedKeys.has(key.code) || (key.modifier === 'shift' && modifiers.shift) || (key.modifier === 'ctrl' && modifiers.ctrl) || (key.modifier === 'alt' && modifiers.alt) || (key.modifier === 'altgr' && modifiers.altgr) || (key.modifier === 'meta' && modifiers.meta)}
-					{@const isExpected = nextKey?.code === key.code || (key.modifier === 'shift' && nextKey?.level === 1) || (key.modifier === 'altgr' && nextKey?.level === 2)}
-					{@const charIndex = modifiers.altgr && key.chars[2] ? 2 : modifiers.shift && key.chars[1] ? 1 : 0}
-					{@const displayChar = key.label || key.chars[charIndex] || key.chars[0] || ''}
-					<div
-						class="key"
-						class:pressed={isPressed}
-						class:expected={isExpected && !isComplete}
-						class:modifier={key.modifier}
-						class:iso-enter-top={key.isoEnterTop}
-						class:iso-enter-bottom={key.isoEnterBottom}
-						class:spacer={key.spacer}
-						style={key.width ? `flex: ${key.width};` : ''}
-					>
-						<span class="key-char">{displayChar}</span>
-						{#if key.chars[1] && !key.modifier && !key.label && key.chars[1] !== key.chars[0]}
-							<span class="key-shift">{key.chars[1]}</span>
-						{/if}
-					</div>
-				{/each}
+	<div class="keyboard-wrapper" dir="ltr">
+		{#if showHands}
+			<div class="hands-container">
+				<!-- Left hand (fingers point up, palm at bottom) -->
+				<svg class="hand left-hand" viewBox="0 0 200 100" xmlns="http://www.w3.org/2000/svg">
+					<!-- Pinky (finger 0) -->
+					<path class="finger finger-0" class:active={expectedFinger === 0 || expectedModifierFinger === 0} d="M20 100 L20 60 Q18 35 28 15 Q35 8 42 15 Q50 35 48 60 L48 100 Z" />
+					<!-- Ring (finger 1) -->
+					<path class="finger finger-1" class:active={expectedFinger === 1 || expectedModifierFinger === 1} d="M48 100 L48 55 Q46 25 56 5 Q65 -2 74 5 Q82 25 80 55 L80 100 Z" />
+					<!-- Middle (finger 2) -->
+					<path class="finger finger-2" class:active={expectedFinger === 2 || expectedModifierFinger === 2} d="M80 100 L80 50 Q78 20 88 0 Q97 -5 106 0 Q114 20 112 50 L112 100 Z" />
+					<!-- Index (finger 3) -->
+					<path class="finger finger-3" class:active={expectedFinger === 3 || expectedModifierFinger === 3} d="M112 100 L112 55 Q110 28 120 10 Q128 3 136 10 Q144 28 142 55 L142 100 Z" />
+					<!-- Thumb (finger 4) -->
+					<path class="finger finger-4" class:active={expectedFinger === 4 || expectedModifierFinger === 4} d="M142 100 L145 70 Q155 50 175 55 Q190 65 185 85 Q180 100 160 100 Z" />
+				</svg>
+				<!-- Right hand (mirrored) -->
+				<svg class="hand right-hand" viewBox="0 0 200 100" xmlns="http://www.w3.org/2000/svg">
+					<!-- Thumb (finger 5) -->
+					<path class="finger finger-5" class:active={expectedFinger === 5 || expectedModifierFinger === 5} d="M58 100 L55 70 Q45 50 25 55 Q10 65 15 85 Q20 100 40 100 Z" />
+					<!-- Index (finger 6) -->
+					<path class="finger finger-6" class:active={expectedFinger === 6 || expectedModifierFinger === 6} d="M58 100 L58 55 Q56 28 64 10 Q72 3 80 10 Q90 28 88 55 L88 100 Z" />
+					<!-- Middle (finger 7) -->
+					<path class="finger finger-7" class:active={expectedFinger === 7 || expectedModifierFinger === 7} d="M88 100 L88 50 Q86 20 94 0 Q103 -5 112 0 Q122 20 120 50 L120 100 Z" />
+					<!-- Ring (finger 8) -->
+					<path class="finger finger-8" class:active={expectedFinger === 8 || expectedModifierFinger === 8} d="M120 100 L120 55 Q118 25 126 5 Q135 -2 144 5 Q154 25 152 55 L152 100 Z" />
+					<!-- Pinky (finger 9) -->
+					<path class="finger finger-9" class:active={expectedFinger === 9 || expectedModifierFinger === 9} d="M152 100 L152 60 Q150 35 158 15 Q165 8 172 15 Q182 35 180 60 L180 100 Z" />
+				</svg>
 			</div>
-		{/each}
+		{/if}
+		<div class="keyboard" class:layout-mismatch={layoutMismatch} dir="ltr">
+			{#each keyboard.rows as row}
+				<div class="keyboard-row">
+					{#each row.keys as key}
+						{@const isPressed = pressedKeys.has(key.code) || (key.modifier === 'shift' && modifiers.shift) || (key.modifier === 'ctrl' && modifiers.ctrl) || (key.modifier === 'alt' && modifiers.alt) || (key.modifier === 'altgr' && modifiers.altgr) || (key.modifier === 'meta' && modifiers.meta)}
+						{@const isExpected = nextKey?.code === key.code || (key.modifier === 'shift' && nextKey?.level === 1) || (key.modifier === 'altgr' && nextKey?.level === 2)}
+						{@const keyFinger = KEY_TO_FINGER[key.code]}
+						{@const isFingerKey = !isComplete && keyFinger !== undefined && (keyFinger === expectedFinger || keyFinger === expectedModifierFinger)}
+						{@const charIndex = modifiers.altgr && key.chars[2] ? 2 : modifiers.shift && key.chars[1] ? 1 : 0}
+						{@const displayChar = key.label || key.chars[charIndex] || key.chars[0] || ''}
+						<div
+							class="key"
+							class:pressed={isPressed}
+							class:expected={isExpected && !isComplete}
+							class:finger-hint={showHands && isFingerKey}
+							class:modifier={key.modifier}
+							class:iso-enter-top={key.isoEnterTop}
+							class:iso-enter-bottom={key.isoEnterBottom}
+							class:spacer={key.spacer}
+							style={key.width ? `flex: ${key.width};` : ''}
+						>
+							<span class="key-char">{displayChar}</span>
+							{#if key.chars[1] && !key.modifier && !key.label && key.chars[1] !== key.chars[0]}
+								<span class="key-shift">{key.chars[1]}</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/each}
+		</div>
 	</div>
 
 	{#if multiplayerRoom}
@@ -2315,1105 +2394,3 @@
 	<div class="build-date">{__BUILD_DATE__}</div>
 </div>
 
-<style>
-	/* Background effects layer (dots) */
-	.background-effects {
-		position: fixed;
-		inset: 0;
-		pointer-events: none;
-		z-index: -3;
-	}
-
-	/* Three.js 3D parallax container */
-	.parallax3d-container {
-		position: fixed;
-		inset: 0;
-		pointer-events: none;
-		z-index: -2;
-	}
-
-	/* Background lanes - space invaders parallax effect */
-	.background-lanes {
-		position: fixed;
-		inset: 0;
-		overflow: hidden;
-		pointer-events: none;
-		z-index: -1;
-	}
-
-	.background-lanes.hidden {
-		display: none;
-	}
-
-	/* Dot pattern background */
-	.background-effects.dot-pattern {
-		background-color: var(--bg);
-		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 30%, 0.35) 1px, transparent 0);
-		background-size: 20px 20px;
-		-webkit-mask-image: linear-gradient(to right, transparent 0%, #000 30%, #000 70%, transparent 100%);
-		mask-image: linear-gradient(to right, transparent 0%, #000 30%, #000 70%, transparent 100%);
-	}
-
-	:global(.dark) .background-effects.dot-pattern {
-		background-image: radial-gradient(circle at 1px 1px, hsla(var(--hue), var(--base-s), 70%, 0.3) 1px, transparent 0);
-	}
-
-	.bg-lane {
-		position: absolute;
-		left: 0;
-		white-space: nowrap;
-		color: hsl(var(--hue), var(--base-s), 50%);
-		animation: scroll-ltr linear forwards;
-		will-change: transform;
-	}
-
-	.bg-lane.rtl {
-		animation-name: scroll-rtl;
-	}
-
-
-	/* LTR text moves right-to-left - travel full width + 200vw buffer for giant text */
-	@keyframes scroll-ltr {
-		from { transform: translateX(100vw); }
-		to { transform: translateX(calc(-100% - 200vw)); }
-	}
-
-	/* RTL text moves left-to-right - start just off left edge, exit right */
-	@keyframes scroll-rtl {
-		from { transform: translateX(-100%); }
-		to { transform: translateX(calc(100vw + 200vw)); }
-	}
-
-	.header {
-		display: flex;
-		flex-direction: column;
-		gap: 0;
-		overflow: hidden;
-		margin: 0;
-	}
-
-	.settings-row {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem 1rem;
-		flex-wrap: wrap;
-	}
-
-	.settings-row.settings-row-top {
-		gap: 0.3rem;
-		justify-content: space-between;
-		font-family: system-ui, -apple-system, sans-serif;
-	}
-
-	.brand {
-		font-family: system-ui, -apple-system, sans-serif;
-		font-weight: 900;
-		font-size: 1.5rem;
-		letter-spacing: 0.15em;
-		color: var(--text-muted);
-		text-decoration: none;
-	}
-
-	.top-controls {
-		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-		flex-wrap: wrap;
-	}
-
-	.settings-panel {
-		display: none;
-		max-height: 0;
-		overflow: hidden;
-		opacity: 0;
-		margin: 0;
-		padding: 0;
-		border: 1px solid transparent;
-		border-radius: 0.25rem;
-		min-inline-size: 0;
-	}
-
-	.settings-panel.open {
-		display: block;
-		max-height: 80vh;
-		overflow-y: auto;
-		opacity: 1;
-		margin-top: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		border-color: var(--border);
-		background: var(--bg-card-alpha);
-	}
-
-	.settings-panel legend {
-		font-size: 0.625rem;
-		color: var(--text-muted);
-		padding: 0 0.25rem;
-		margin: 0;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.settings-content {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.settings-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem 1rem;
-	}
-
-	.setting-item {
-		display: flex;
-		align-items: center;
-		gap: 0.375rem;
-	}
-
-	.setting-label {
-		font-size: 0.7rem;
-		color: var(--text-muted);
-	}
-
-	.setting-value {
-		font-size: 0.65rem;
-		color: var(--text-muted);
-		min-width: 2rem;
-		text-align: center;
-	}
-
-	.setting-select {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.setting-select option {
-		unicode-bidi: plaintext;
-		direction: ltr;
-	}
-
-	.setting-btn {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.setting-btn:hover {
-		background: var(--border);
-	}
-
-	.setting-btn.reset-btn {
-		color: var(--error);
-		border-color: hsla(0, 45%, 45%, 0.3);
-	}
-
-	.setting-btn.reset-btn:hover {
-		background: hsla(0, 45%, 45%, 0.1);
-	}
-
-	.setting-input-small {
-		width: 3rem;
-		padding: 0.2rem 0.3rem;
-		font-family: inherit;
-		font-size: 0.7rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		text-align: center;
-	}
-
-	.setting-input-small::placeholder {
-		font-size: 0.6rem;
-	}
-
-	.setting-input-small::-webkit-outer-spin-button,
-	.setting-input-small::-webkit-inner-spin-button {
-		-webkit-appearance: none;
-		margin: 0;
-	}
-
-	.setting-vertical {
-		flex-direction: column;
-		align-items: stretch !important;
-		gap: 0.25rem;
-	}
-
-	.setting-textarea {
-		width: 100%;
-		padding: 0.25rem 0.5rem;
-		font-family: monospace;
-		font-size: 0.65rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		resize: vertical;
-		line-height: 1.4;
-	}
-
-	.credits {
-		margin-top: 1rem;
-		padding-top: 0.75rem;
-		border-top: 1px solid var(--border);
-		font-size: 0.65rem;
-		color: var(--text-muted);
-		line-height: 1.6;
-	}
-
-	.credits-section {
-		margin-bottom: 0.75rem;
-	}
-
-	.credits-section:last-child {
-		margin-bottom: 0;
-	}
-
-	.credits-title {
-		font-size: 0.625rem;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		margin-bottom: 0.25rem;
-		font-weight: 600;
-	}
-
-	.credits-section p {
-		margin: 0.2rem 0;
-	}
-
-	.credits a {
-		color: var(--text);
-		text-decoration: none;
-	}
-
-	.credits a:hover {
-		text-decoration: underline;
-	}
-
-	.credits-date {
-		margin-top: 0.5rem !important;
-		opacity: 0.6;
-	}
-
-	.setting-input {
-		flex: 1;
-		min-width: 0;
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.7rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-	}
-
-
-	.setting-item input[type="range"] {
-		width: 4rem;
-		cursor: pointer;
-	}
-
-	.setting-item input[type="color"] {
-		width: 1.25rem;
-		height: 1.25rem;
-		padding: 0;
-		border: 1px solid var(--border);
-		border-radius: 50%;
-		cursor: pointer;
-		background: none;
-		-webkit-appearance: none;
-		appearance: none;
-	}
-
-	.setting-item input[type="color"]::-webkit-color-swatch-wrapper {
-		padding: 0;
-	}
-
-	.setting-item input[type="color"]::-webkit-color-swatch {
-		border: none;
-		border-radius: 50%;
-	}
-
-	.setting-item input[type="color"]::-moz-color-swatch {
-		border: none;
-		border-radius: 50%;
-	}
-
-	.setting-item input[type="checkbox"] {
-		cursor: pointer;
-	}
-
-	.toggle-arrow {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1rem;
-		height: 1rem;
-		transition: transform 0.25s ease-out;
-		transform: rotate(0deg);
-		font-size: 1rem;
-		line-height: 1;
-	}
-
-	.toggle-arrow.open {
-		transform: rotate(90deg);
-	}
-
-	.toggle-arrow.rtl.open {
-		transform: rotate(-90deg);
-	}
-
-	.mode-btn {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.mode-btn.active {
-		background: var(--text);
-		color: var(--bg);
-		border-color: var(--text);
-	}
-
-	.mode-btn.more-toggle {
-		min-width: 1.5rem;
-		padding: 0.25rem 0.4rem;
-	}
-
-	.keyboard-select {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-		unicode-bidi: plaintext;
-	}
-
-	.keyboard-select option,
-	.keyboard-select optgroup {
-		unicode-bidi: plaintext;
-		direction: ltr;
-	}
-
-	.keyboard-select:focus {
-		outline: 1px solid var(--text-muted);
-	}
-
-	.btn-small {
-		padding: 0.25rem 0.5rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.btn-small:hover {
-		background: var(--border);
-	}
-
-	.btn-tiny {
-		padding: 0.1rem 0.3rem;
-		font-family: inherit;
-		font-size: 0.65rem;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: 0.2rem;
-		color: var(--text-muted);
-		cursor: pointer;
-		margin-inline-start: 0.25rem;
-		vertical-align: middle;
-	}
-
-	.btn-tiny:hover {
-		background: var(--border);
-	}
-
-	.metrics-bar {
-		display: flex;
-		justify-content: center;
-		gap: 2rem;
-		padding: 0.5rem 1rem;
-		background: var(--bg-card-alpha);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
-	}
-
-	.metric {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0;
-	}
-
-	.metric-value {
-		font-size: 1.25rem;
-		font-weight: 600;
-		line-height: 1.2;
-	}
-
-	.metric-unit {
-		font-size: 0.5em;
-		font-weight: 400;
-		opacity: 0.7;
-		margin-inline-start: 0.1em;
-	}
-
-	.metric-label {
-		font-size: 0.625rem;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.text-display {
-		position: relative;
-		min-height: calc(var(--font-size) * 5);
-		max-height: clamp(7rem, calc(100vh - 26rem), 32vh);
-		overflow: hidden;
-		background: var(--bg-card-alpha);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		padding: 0.75rem 1rem;
-	}
-
-	.text-credit {
-		position: absolute;
-		bottom: 0.25rem;
-		left: 0.5rem;
-		font-size: 0.625rem;
-		color: var(--text-muted);
-		opacity: 0.5;
-	}
-
-	.text-credit a {
-		color: inherit;
-		text-decoration: none;
-	}
-
-	.text-credit a:hover {
-		text-decoration: underline;
-	}
-
-	.text-number {
-		margin-inline-start: 0.5em;
-		opacity: 0;
-		transition: opacity 0.2s;
-	}
-
-	.text-url {
-		margin-inline-start: 0.5em;
-		opacity: 0;
-		transition: opacity 0.2s;
-	}
-
-	.text-credit:hover .text-number,
-	.text-credit:hover .text-url {
-		opacity: 1;
-	}
-
-	.scroll-container {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		transition: transform 0.3s ease-out;
-		padding: 1rem 2rem;
-	}
-
-	.line {
-		font-size: var(--font-size);
-		line-height: 2.2;
-		white-space: pre-wrap;
-		word-break: break-word;
-		overflow-wrap: break-word;
-		text-align: center;
-		max-width: 90%;
-		transition: all 0.35s ease-out;
-		transform-origin: center center;
-	}
-
-	.line.done {
-		opacity: 0.1;
-		transform: scale(0.55);
-		filter: blur(1px);
-	}
-
-	.line.adjacent {
-		opacity: 0.6;
-		transform: scale(0.82);
-	}
-
-	.line.active {
-		opacity: 1;
-		transform: scale(1.15);
-		font-weight: 500;
-		color: var(--text);
-	}
-
-	.line.active .char.pending {
-		color: var(--text);
-	}
-
-	.line.upcoming {
-		opacity: 0.25;
-		transform: scale(0.65);
-		filter: blur(0.5px);
-	}
-
-	.line.text-start {
-		margin-top: 1.5em;
-	}
-
-	.char {
-		display: inline;
-		transition: color 0.1s;
-		/* Preserve Arabic/Persian text shaping */
-		font-feature-settings: "calt" 1, "liga" 1;
-	}
-
-	/* Zero-width characters (ZWNJ, ZWS, ZWJ) should not break text shaping */
-	.char.zw {
-		display: contents;
-	}
-
-	.char.correct {
-		color: var(--correct);
-	}
-
-	.char.error {
-		color: var(--error);
-		text-decoration: underline;
-		text-decoration-style: wavy;
-		text-underline-offset: 0.15em;
-	}
-
-	.char.current {
-		background: var(--current);
-		border-radius: 0.125rem;
-	}
-
-	.char.pending {
-		color: var(--pending);
-	}
-
-
-	.keyboard {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		padding: 0.5rem;
-		background: var(--bg-card-alpha);
-		border: 2px solid var(--border);
-		border-radius: 0.25rem;
-		font-family: var(--font-family-mono);
-		user-select: none;
-		transition: border-color 0.05s ease-out, box-shadow 0.05s ease-out;
-	}
-
-
-	.keyboard.layout-mismatch {
-		border-color: var(--error);
-		box-shadow: inset 0 0 20px hsla(0, 45%, 45%, 0.15), 0 0 12px hsla(0, 45%, 45%, 0.5);
-	}
-
-	.keyboard-row {
-		display: flex;
-		gap: 0.2rem;
-	}
-
-	.key {
-		flex: 1;
-		min-width: 0;
-		height: 2.5rem;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		font-size: 1rem;
-		color: var(--text-muted);
-		position: relative;
-		transition: all 0.1s;
-	}
-
-	.key.modifier {
-		font-size: 0.75rem;
-	}
-
-	.key.spacer {
-		visibility: hidden;
-	}
-
-	.key.iso-enter-top {
-		position: relative;
-		border-bottom-right-radius: 0;
-	}
-
-	.key.iso-enter-top::after {
-		content: '';
-		position: absolute;
-		top: 100%;
-		right: -1px;
-		width: 83%;
-		height: calc(2.5rem + 0.2rem);
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-top: none;
-		border-radius: 0 0 0.25rem 0.25rem;
-	}
-
-	.key.iso-enter-top.pressed::after {
-		background: var(--text);
-		border-color: var(--text);
-	}
-
-	.key.iso-enter-bottom {
-		visibility: hidden;
-	}
-
-	.key.pressed {
-		background: var(--text);
-		color: var(--bg);
-		border-color: var(--text);
-		transform: scale(0.95);
-	}
-
-	.key-char {
-		line-height: 1;
-	}
-
-	.key-shift {
-		position: absolute;
-		top: 0.15rem;
-		right: 0.25rem;
-		font-size: 0.8rem;
-		opacity: 0.6;
-	}
-
-	.input-area {
-		padding: 0.5rem;
-		background: var(--bg-card-alpha);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-	}
-
-	.input-field {
-		width: 100%;
-		padding: 0.5rem;
-		font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
-		font-size: var(--font-size);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		background: var(--bg);
-		color: var(--text);
-		text-align: inherit;
-		resize: none;
-	}
-
-	.input-field:focus {
-		outline: 2px solid var(--text-muted);
-		outline-offset: 2px;
-	}
-
-	.controls {
-		display: flex;
-		justify-content: center;
-		margin-top: 0.5rem;
-	}
-
-	.btn {
-		padding: 0.375rem 1rem;
-		font-family: inherit;
-		font-size: 0.75rem;
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-
-	.btn:hover {
-		background: var(--border);
-	}
-
-	.complete-message {
-		text-align: center;
-		padding: 0.75rem;
-		margin-bottom: 0.75rem;
-		background: var(--border);
-		border-radius: 0.25rem;
-	}
-
-	.complete-actions {
-		display: flex;
-		justify-content: center;
-		gap: 0.5rem;
-		margin-top: 0.5rem;
-	}
-
-	.hint {
-		font-size: 0.75rem;
-		color: var(--text-muted);
-		margin-top: 0.25rem;
-	}
-
-	.history-panel {
-		padding: 0.75rem 1rem;
-		background: var(--bg-card-alpha);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		font-size: 0.875rem;
-	}
-
-	.history-panel summary {
-		cursor: pointer;
-		color: var(--text-muted);
-	}
-
-	.history-panel[open] summary {
-		margin-bottom: 0.75rem;
-	}
-
-	.history-panel .btn-small {
-		display: block;
-		margin-top: 0.75rem;
-		margin-inline-start: auto;
-	}
-
-	.history-chart {
-		margin-top: 0.75rem;
-		height: 180px;
-	}
-
-	.history-list {
-		list-style: none;
-	}
-
-	.history-item {
-		display: flex;
-		justify-content: space-between;
-		padding: 0.375rem 0;
-		border-bottom: 1px solid var(--border);
-		font-size: 0.75rem;
-	}
-
-	.history-item:last-child {
-		border-bottom: none;
-	}
-
-	/* Multiplayer styles */
-	.race-track {
-		padding: 0.75rem 1rem;
-		background: var(--bg-card-alpha);
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-	}
-
-	.race-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 0.5rem;
-		padding-bottom: 0.5rem;
-		border-bottom: 1px solid var(--border);
-	}
-
-	.room-code {
-		font-family: var(--font-family-mono);
-		font-weight: 600;
-		font-size: 0.875rem;
-		color: var(--text);
-	}
-
-	.connection-status {
-		font-size: 0.75rem;
-		color: var(--error);
-		cursor: help;
-	}
-
-	.connection-status.connected {
-		color: var(--text-muted);
-	}
-
-	.connection-status.connected.has-peers {
-		color: var(--correct);
-	}
-
-	.race-status {
-		font-size: 0.875rem;
-		color: var(--text-muted);
-	}
-
-	.race-lanes {
-		display: flex;
-		flex-direction: column;
-		gap: 0.375rem;
-	}
-
-	.race-lane {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.25rem 0;
-	}
-
-	.race-lane.is-me {
-		font-weight: 600;
-	}
-
-	.race-lane.disconnected {
-		opacity: 0.4;
-	}
-
-	.lane-icon {
-		position: absolute;
-		top: 50%;
-		transform: translateY(-50%);
-		font-size: 1.25rem;
-		line-height: 1;
-		transition: inset-inline-start 0.15s ease-out;
-	}
-
-	[dir="ltr"] .lane-icon {
-		transform: translateY(-50%) scaleX(-1);
-	}
-
-	.lane-name {
-		font-size: 0.75rem;
-		min-width: 6rem;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.lane-progress {
-		flex: 1;
-		height: 0.5rem;
-		border-radius: 0.25rem;
-		position: relative;
-		border: 1px solid var(--border);
-	}
-
-	.lane-bar {
-		height: 100%;
-		background: var(--text-muted);
-		transition: width 0.15s ease-out;
-		border-radius: 0.25rem;
-	}
-
-	.lane-wpm {
-		font-size: 0.75rem;
-		font-family: var(--font-family-mono);
-		min-width: 2.5rem;
-		text-align: right;
-		color: var(--text-muted);
-	}
-
-	.race-start-btn {
-		margin-top: 0.75rem;
-		width: 100%;
-	}
-
-	.race-results {
-		margin-top: 1rem;
-		padding: 1rem;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		text-align: center;
-	}
-
-	.result-winner {
-		font-size: 1.25rem;
-		font-weight: 600;
-		margin-bottom: 0.5rem;
-	}
-
-	.result-you {
-		color: var(--text-muted);
-	}
-
-	.result-stats {
-		display: block;
-		font-size: 0.875rem;
-		font-weight: normal;
-		opacity: 0.8;
-	}
-
-	.controls-divider {
-		width: 1px;
-		height: 1.5rem;
-		background: var(--border);
-		margin: 0 0.25rem;
-	}
-
-	.modal-overlay {
-		position: fixed;
-		inset: 0;
-		background: hsla(var(--hue), var(--base-s), 15%, 0.6);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 100;
-	}
-
-	.modal {
-		background: var(--bg-card);
-		border: 1px solid var(--border);
-		border-radius: 0.5rem;
-		padding: 1.5rem;
-		min-width: 20rem;
-		max-width: 90vw;
-	}
-
-	.modal h3 {
-		margin-bottom: 0.75rem;
-		font-size: 1rem;
-	}
-
-	.modal p {
-		margin-bottom: 1rem;
-		color: var(--text-muted);
-		font-size: 0.875rem;
-	}
-
-	.modal-buttons {
-		display: flex;
-		gap: 0.5rem;
-		justify-content: flex-end;
-	}
-
-	.room-input {
-		width: 100%;
-		padding: 0.75rem;
-		font-family: var(--font-family-mono);
-		font-size: 1.25rem;
-		text-align: center;
-		text-transform: uppercase;
-		letter-spacing: 0.25em;
-		border: 1px solid var(--border);
-		border-radius: 0.25rem;
-		background: var(--bg);
-		color: var(--text);
-		margin-bottom: 1rem;
-	}
-
-	.room-input:focus {
-		outline: 2px solid var(--text-muted);
-		outline-offset: 2px;
-	}
-
-	.active-rooms {
-		margin-top: 1.5rem;
-		padding-top: 1rem;
-		border-top: 1px solid var(--border);
-	}
-
-	.active-rooms-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 0.75rem;
-		font-size: 0.875rem;
-		color: var(--text-muted);
-	}
-
-	.no-rooms {
-		font-size: 0.75rem;
-		color: var(--text-muted);
-		text-align: center;
-		padding: 0.5rem;
-	}
-
-	.room-list {
-		list-style: none;
-		max-height: 10rem;
-		overflow-y: auto;
-	}
-
-	.room-item {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem;
-		border-radius: 0.25rem;
-		background: var(--bg);
-		margin-bottom: 0.375rem;
-	}
-
-	.room-item:hover {
-		background: var(--border);
-	}
-
-	.room-item-code {
-		font-family: var(--font-family-mono);
-		font-weight: 600;
-		font-size: 0.875rem;
-	}
-
-	.room-item-players {
-		font-size: 0.625rem;
-		color: var(--text-muted);
-		background: var(--border);
-		padding: 0.125rem 0.375rem;
-		border-radius: 0.75rem;
-	}
-
-	.room-item-host {
-		flex: 1;
-		font-size: 0.75rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.room-item-kb {
-		font-size: 0.625rem;
-		color: var(--text-muted);
-	}
-
-	/* Parallax - hide animated background elements when disabled (dots stay visible) */
-	.app:not(.parallax) .background-lanes,
-	.app:not(.parallax) .parallax3d-container {
-		display: none;
-	}
-
-	.build-date {
-		flex-grow: 1;
-		display: flex;
-		align-items: flex-end;
-		justify-content: center;
-		min-height: 0;
-		font-size: 0.625rem;
-		line-height: 1;
-		color: var(--text-muted);
-		opacity: 0.4;
-		font-family: ui-monospace, monospace;
-	}
-</style>
