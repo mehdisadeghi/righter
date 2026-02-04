@@ -8,7 +8,7 @@ help:
 	@echo "Usage:"
 	@echo "  make install   Install dependencies"
 	@echo "  make dev       Start development server"
-	@echo "  make build     Build for production"
+	@echo "  make build [BASE=/path]  Build for production (BASE for subpath hosting)"
 	@echo "  make preview   Preview production build"
 	@echo "  make fmt       Format code (Svelte/JS/HTML/CSS)"
 	@echo "  make clean     Remove build artifacts"
@@ -21,7 +21,7 @@ dev:
 	$(BUN) run dev --host 0.0.0.0
 
 build:
-	$(BUN) run build
+	BASE_PATH=$(BASE) $(BUN) run build
 
 preview:
 	$(BUN) run preview

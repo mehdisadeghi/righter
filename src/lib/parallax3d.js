@@ -2,19 +2,24 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { loadFont as loadOpenTypeFont, createArabicExtrudedText } from './arabic-extrude.js';
 
 // Font URLs for Troika (loaded on demand)
-// Bundled locally with fallback to Google Fonts if local fails
-const FONT_VAZIRMATN = '/fonts/Vazirmatn-Regular.ttf';
+// Relative paths work for both root and subpath hosting
+const FONT_VAZIRMATN = 'fonts/Vazirmatn-Regular.ttf';
 const FONT_SYSTEM = undefined; // Use Troika's default
 
 // Typeface JSON fonts for TextGeometry (3D extrusion)
 // Bundled locally for offline use
-const FONT_TYPEFACE_URL = '/fonts/helvetiker_regular.typeface.json';
+const FONT_TYPEFACE_URL = 'fonts/helvetiker_regular.typeface.json';
 
 // Cache for loaded fonts
 let loadedFont = null;
 let fontLoadPromise = null;
+
+// OpenType font for Arabic extrusion
+let arabicFont = null;
+let arabicFontPromise = null;
 
 // Canvas font ready promise (Vazirmatn loaded via CSS @import)
 let canvasFontPromise = null;
@@ -24,6 +29,24 @@ function loadCanvasFont() {
 	// Font is loaded via CSS @import, just wait for it to be ready
 	canvasFontPromise = document.fonts.ready;
 	return canvasFontPromise;
+}
+
+async function loadArabicFont() {
+	if (arabicFont) return arabicFont;
+	if (arabicFontPromise) return arabicFontPromise;
+
+	arabicFontPromise = loadOpenTypeFont(FONT_VAZIRMATN)
+		.then(font => {
+			arabicFont = font;
+			console.debug('Arabic OpenType font loaded for 3D extrusion');
+			return font;
+		})
+		.catch(err => {
+			console.warn('Failed to load Arabic font for extrusion:', err);
+			return null;
+		});
+
+	return arabicFontPromise;
 }
 
 let webglSupported = null;
@@ -79,6 +102,7 @@ export class Parallax3DRenderer {
 		this._loadFont();
 		if (this.isRTL) {
 			loadCanvasFont();
+			loadArabicFont(); // Pre-load for extrusion
 		}
 	}
 
@@ -292,7 +316,7 @@ export class Parallax3DRenderer {
 
 		const centerX = canvas.width / 2;
 		const centerY = canvas.height / 2;
-		const lightness = this.isDark ? 70 : 40;
+		const lightness = this.isDark ? 70 : 35;
 		const baseColor = `hsl(${this.hue}, 15%, ${lightness}%)`;
 
 		ctx.font = font;
@@ -339,7 +363,7 @@ export class Parallax3DRenderer {
 	}
 
 	_createTroikaText(text, fontSize, opacity) {
-		const baseL = this.isDark ? 70 : 40;
+		const baseL = this.isDark ? 70 : 35;
 		const baseSat = 20;
 		const { l, s } = this._getTextureColor(baseL, baseSat);
 		const finalOpacity = this._getTextureOpacity(opacity);
@@ -502,9 +526,14 @@ export class Parallax3DRenderer {
 
 	_create3DDepthText(text, fontSize, opacity, l, s) {
 		// For extrude effect with loaded font, use real 3D TextGeometry
-		// But only for LTR - the Helvetiker font doesn't support Persian/Arabic
-		if (this.effect === 'extrude' && this.font && !this.isRTL) {
-			return this._createExtrudedText(text, fontSize, opacity, l, s);
+		if (this.effect === 'extrude') {
+			if (this.isRTL && arabicFont) {
+				// Use OpenType-based Arabic extrusion
+				return this._createArabicExtrudedText(text, fontSize, opacity, l, s);
+			} else if (!this.isRTL && this.font) {
+				// Use Helvetiker for Latin
+				return this._createExtrudedText(text, fontSize, opacity, l, s);
+			}
 		}
 
 		// Layered approach for shadow/emboss effects
@@ -577,7 +606,9 @@ export class Parallax3DRenderer {
 		geometry.center();
 
 		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
-		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${Math.max(10, l - 25)}%)`);
+		// Dark mode: darker sides. Light mode: lighter sides for softer 3D effect
+		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
+		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
 
 		const materials = [
 			new THREE.MeshStandardMaterial({
@@ -589,6 +620,65 @@ export class Parallax3DRenderer {
 			}),
 			new THREE.MeshStandardMaterial({
 				color: sideColor,
+				transparent: isTransparent,
+				opacity: finalOpacity,
+				metalness: this.texture === 'metallic' ? 0.8 : 0.1,
+				roughness: this.texture === 'metallic' ? 0.3 : 0.8
+			})
+		];
+
+		const mesh = new THREE.Mesh(geometry, materials);
+		mesh.userData.isExtrudedText = true;
+		mesh.userData.geometry = geometry;
+		mesh.userData.materials = materials;
+
+		return mesh;
+	}
+
+	_createArabicExtrudedText(text, fontSize, opacity, l, s) {
+		const depth = fontSize * 2;
+		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
+		const isTransparent = finalOpacity < 0.99;
+
+		// Use OpenType-based extrusion which handles Arabic shaping
+		const geometry = createArabicExtrudedText(arabicFont, text, fontSize, depth, {
+			bevelEnabled: true,
+			bevelThickness: fontSize * 0.05,
+			bevelSize: fontSize * 0.04,
+			bevelSegments: 3,
+			curveSegments: 6
+		});
+
+		if (!geometry) {
+			// Fallback to layered approach if geometry creation fails
+			return null;
+		}
+
+		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
+		// Dark mode: darker sides. Light mode: lighter sides for softer 3D effect
+		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
+		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
+
+		// Rainbow mode for Arabic - use random hue per word (can't do per-char)
+		let finalFrontColor = frontColor;
+		let finalSideColor = sideColor;
+		if (this.rainbow) {
+			const hue = Math.random() * 360;
+			finalFrontColor = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+			const rainbowSideL = this.isDark ? Math.max(15, l - 20) : Math.min(90, l + 20);
+			finalSideColor = new THREE.Color(`hsl(${hue}, 60%, ${rainbowSideL}%)`);
+		}
+
+		const materials = [
+			new THREE.MeshStandardMaterial({
+				color: finalFrontColor,
+				transparent: isTransparent,
+				opacity: finalOpacity,
+				metalness: this.texture === 'metallic' ? 0.8 : 0.1,
+				roughness: this.texture === 'metallic' ? 0.2 : 0.7
+			}),
+			new THREE.MeshStandardMaterial({
+				color: finalSideColor,
 				transparent: isTransparent,
 				opacity: finalOpacity,
 				metalness: this.texture === 'metallic' ? 0.8 : 0.1,
@@ -636,7 +726,8 @@ export class Parallax3DRenderer {
 			// Rainbow hue based on character position
 			const hue = (i * 360 / Math.max(chars.length, 1)) % 360;
 			const frontColor = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
-			const sideColor = new THREE.Color(`hsl(${hue}, 60%, ${Math.max(15, l - 20)}%)`);
+			const sideL = this.isDark ? Math.max(15, l - 20) : Math.min(90, l + 20);
+			const sideColor = new THREE.Color(`hsl(${hue}, 60%, ${sideL}%)`);
 
 			const materials = [
 				new THREE.MeshStandardMaterial({
@@ -910,7 +1001,10 @@ export class Parallax3DRenderer {
 		if (options.isDark !== undefined) this.isDark = options.isDark;
 		if (options.isRTL !== undefined) {
 			this.isRTL = options.isRTL;
-			if (options.isRTL) loadCanvasFont();
+			if (options.isRTL) {
+				loadCanvasFont();
+				loadArabicFont(); // Load for 3D extrusion
+			}
 		}
 		if (options.effect !== undefined) this.effect = options.effect;
 		if (options.texture !== undefined) this.texture = options.texture;

@@ -1,5 +1,6 @@
 <script>
 	import { onMount, tick } from 'svelte';
+	import { base } from '$app/paths';
 	import { t, getDirection, supportedLanguages } from '$lib/i18n.js';
 	import { getRandomTextItem, getTextMeta, getTextCount, getTextByNumber } from '$lib/texts.js';
 	import { buildKeyboard, languageMappings, keyboardGroups, isRTL } from '$lib/keyboards/index.js';
@@ -1699,7 +1700,7 @@
 
 	<header class="header">
 		<div class="settings-row settings-row-top" dir="ltr">
-			<span class="brand">RIGHTER</span>
+			<a href={base || '/'} class="brand">RIGHTER</a>
 			<div class="top-controls">
 				<select
 					class="keyboard-select"
@@ -2014,6 +2015,7 @@
 							<a href="https://kit.svelte.dev" target="_blank" rel="noopener">SvelteKit</a>,
 							<a href="https://threejs.org" target="_blank" rel="noopener">Three.js</a>,
 							<a href="https://protectwise.github.io/troika/troika-three-text/" target="_blank" rel="noopener">Troika</a>,
+							<a href="https://opentype.js.org" target="_blank" rel="noopener">opentype.js</a>,
 							<a href="https://github.com/nbd-wtf/nostr-tools" target="_blank" rel="noopener">nostr-tools</a>,
 							<a href="https://yjs.dev" target="_blank" rel="noopener">Yjs</a>
 						</p>
@@ -2408,6 +2410,7 @@
 		font-size: 1.5rem;
 		letter-spacing: 0.15em;
 		color: var(--text-muted);
+		text-decoration: none;
 	}
 
 	.top-controls {

@@ -1,4 +1,5 @@
-/* Vazirmatn - bundled with local() fallback for user's installed font */
+/* Vazirmatn - bundled with local() fallback for user's installed font
+   Note: For subpath hosting, set paths.base in svelte.config.js */
 @font-face {
 	font-family: 'Vazirmatn';
 	font-style: normal;

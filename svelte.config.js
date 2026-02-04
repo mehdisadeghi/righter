@@ -9,7 +9,11 @@ const config = {
 			fallback: null,
 			precompress: false,
 			strict: true
-		})
+		}),
+		paths: {
+			// Set via BASE_PATH env var for subpath hosting: make build BASE=/righter
+			base: process.env.BASE_PATH || ''
+		}
 	}
 };
 
