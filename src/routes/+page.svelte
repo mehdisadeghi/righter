@@ -1,7 +1,7 @@
 <script>
 	import { onMount, tick } from 'svelte';
 	import { t, getDirection, supportedLanguages } from '$lib/i18n.js';
-	import { getRandomTextItem, getTextMeta, getTextCount } from '$lib/texts.js';
+	import { getRandomTextItem, getTextMeta, getTextCount, getTextByNumber } from '$lib/texts.js';
 	import { buildKeyboard, languageMappings, keyboardGroups, isRTL } from '$lib/keyboards/index.js';
 	import {
 		loadData,
@@ -26,6 +26,20 @@
 		time: [15, 30, 60, 120],
 		text: [1, 3, 5, 10]
 	};
+
+	// Font options (per script)
+	const FONTS_LATIN = [
+		{ id: 'system', family: 'system-ui, -apple-system, sans-serif' },
+		{ id: 'arial', family: 'Arial, Helvetica, sans-serif' },
+		{ id: 'georgia', family: 'Georgia, serif' },
+		{ id: 'times', family: '"Times New Roman", Times, serif' }
+	];
+	const FONTS_ARABIC = [
+		{ id: 'vazirmatn', family: "'Vazirmatn', 'Tahoma', system-ui, sans-serif" },
+		{ id: 'tahoma', family: "'Tahoma', 'Segoe UI', system-ui, sans-serif" },
+		{ id: 'segoe', family: "'Segoe UI', 'Tahoma', system-ui, sans-serif" },
+		{ id: 'system', family: 'system-ui, sans-serif' }
+	];
 
 	// Reliable public relays (curated list with good uptime)
 	const RECOMMENDED_RELAYS = [
@@ -91,6 +105,86 @@
 		}
 	});
 
+	// Apply font settings to CSS variables
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		const s = data?.settings;
+		if (!s) return;
+
+		const latinFont = FONTS_LATIN.find(f => f.id === s.fontLatin) || FONTS_LATIN[0];
+		const arabicFont = FONTS_ARABIC.find(f => f.id === s.fontArabic) || FONTS_ARABIC[0];
+
+		document.documentElement.style.setProperty('--font-family', latinFont.family);
+		document.documentElement.style.setProperty('--font-family-arabic', arabicFont.family);
+	});
+
+	// URL query params for shareable settings
+	const URL_PARAM_KEYS = ['lng', 'hue', 'parallax', 'intensity', '3d', 'effect', 'texture', 'rainbow', 'q'];
+
+	function getUrlParams() {
+		if (typeof window === 'undefined') return {};
+		const params = new URLSearchParams(window.location.search);
+		const result = {};
+		for (const key of URL_PARAM_KEYS) {
+			if (params.has(key)) result[key] = params.get(key);
+		}
+		return result;
+	}
+
+	// Map short language codes to full locale codes
+	function resolveLocale(lng) {
+		if (!lng) return null;
+		// If already a full locale, return as-is
+		if (lng.includes('-')) return lng;
+		// Map common short codes to full locales
+		const map = {
+			'fa': 'fa-IR', 'en': 'en-US', 'de': 'de-DE', 'es': 'es-ES',
+			'ar': 'ar-SA', 'ur': 'ur-PK', 'ps': 'ps-AF', 'ckb': 'ckb-IQ',
+			'sd': 'sd-PK', 'ug': 'ug-CN', 'pa': 'pa-PK', 'ks': 'ks-IN'
+		};
+		return map[lng] || lng;
+	}
+
+	function applyUrlParams(params) {
+		const updates = {};
+		if (params.lng) updates.keyboardLocale = resolveLocale(params.lng);
+		if (params.hue) updates.hue = parseInt(params.hue, 10);
+		if (params.parallax !== undefined) updates.parallax = params.parallax !== '0' && params.parallax !== 'false';
+		if (params.intensity) updates.parallaxIntensity = parseFloat(params.intensity);
+		if (params['3d'] !== undefined) updates.parallax3d = params['3d'] !== '0' && params['3d'] !== 'false';
+		if (params.effect) updates.parallax3dEffect = params.effect;
+		if (params.texture) updates.parallax3dTexture = params.texture;
+		if (params.rainbow !== undefined) updates.parallax3dRainbow = params.rainbow !== '0' && params.rainbow !== 'false';
+		return updates;
+	}
+
+	function updateUrlParams() {
+		if (typeof window === 'undefined') return;
+		const params = new URLSearchParams();
+		const s = data.settings;
+
+		// Only add non-default values
+		if (s.keyboardLocale && s.keyboardLocale !== 'en-US') params.set('lng', s.keyboardLocale);
+		if (s.hue !== undefined && s.hue !== 220) params.set('hue', s.hue);
+		if (s.parallax === false) params.set('parallax', '0');
+		if (s.parallaxIntensity !== undefined && s.parallaxIntensity !== 1.5) params.set('intensity', s.parallaxIntensity);
+		if (s.parallax3d === true) params.set('3d', '1');
+		if (s.parallax3dEffect && s.parallax3dEffect !== 'none') params.set('effect', s.parallax3dEffect);
+		if (s.parallax3dTexture && s.parallax3dTexture !== 'solid') params.set('texture', s.parallax3dTexture);
+		if (s.parallax3dRainbow === true) params.set('rainbow', '1');
+
+		// Add current quatrain number if available
+		if (currentTextItem?.number) params.set('q', currentTextItem.number);
+
+		const newUrl = params.toString() ? `${window.location.pathname}?${params}` : window.location.pathname;
+		window.history.replaceState({}, '', newUrl);
+	}
+
+	// Track current quatrain number for URL
+	let urlQuatrain = $state(null);
+	// Skip URL updates until initial load is complete
+	let initialLoadComplete = $state(false);
+
 	// Multiplayer state
 	let identity = $state(null);
 	let multiplayerRoom = $state(null);
@@ -125,7 +219,7 @@
 	let modeValue = $derived(data.settings.modeValue || 30);
 	let errorReplace = $derived(data.settings.errorReplace || false);
 	let parallax = $derived(data.settings.parallax !== false);
-	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.0);
+	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.5);
 	let parallax3d = $derived(data.settings.parallax3d === true);
 	let parallax3dEffect = $derived(data.settings.parallax3dEffect || 'none');
 	let parallax3dTexture = $derived(data.settings.parallax3dTexture || 'solid');
@@ -237,6 +331,25 @@
 	});
 
 	let currentTextItem = $derived(currentTextItems[currentTextItemIndex] || null);
+
+	// Update URL when settings or current text change (skip during initial load)
+	$effect(() => {
+		// Dependencies: key settings and current quatrain
+		const _ = [
+			data.settings.keyboardLocale,
+			data.settings.hue,
+			data.settings.parallax,
+			data.settings.parallaxIntensity,
+			data.settings.parallax3d,
+			data.settings.parallax3dEffect,
+			data.settings.parallax3dTexture,
+			data.settings.parallax3dRainbow,
+			currentTextItem?.number
+		];
+		if (initialLoadComplete) {
+			updateUrlParams();
+		}
+	});
 
 	// Line indices that start a new text (for visual separation)
 	let textStartLines = $derived.by(() => {
@@ -645,6 +758,16 @@
 			}
 			currentTextItems = items;
 			return items.map((item) => item.text).join('\n');
+		}
+
+		// Load specific quatrain from URL param if provided
+		if (urlQuatrain !== null) {
+			const specificItem = getTextByNumber(textLang, urlQuatrain);
+			if (specificItem) {
+				currentTextItems = [specificItem];
+				urlQuatrain = null; // Clear so subsequent loads are random
+				return specificItem.text;
+			}
 		}
 
 		const items = [];
@@ -1282,10 +1405,22 @@
 			saveData(data);
 		}
 
+		// Apply URL params (override stored settings)
+		const urlParams = getUrlParams();
+		const urlUpdates = applyUrlParams(urlParams);
+		if (Object.keys(urlUpdates).length > 0) {
+			data.settings = { ...data.settings, ...urlUpdates };
+			saveData(data);
+		}
+		// Store quatrain param for loading specific text
+		urlQuatrain = urlParams.q ? parseInt(urlParams.q, 10) : null;
+
 		// Load identity
 		identity = loadIdentity(isRTL(data.settings.keyboardLocale));
 
 		await loadNewText();
+		initialLoadComplete = true;
+		updateUrlParams(); // Now safe to update URL with loaded quatrain
 
 		// Check for room in URL
 		const roomCode = getRoomFromUrl();
@@ -1672,6 +1807,32 @@
 						/>
 					</label>
 
+					<label class="setting-item">
+						<span class="setting-label">{tr('fontLatin')}</span>
+						<select
+							class="setting-select"
+							value={data.settings.fontLatin || 'system'}
+							onchange={(e) => changeSetting('fontLatin', e.target.value)}
+						>
+							{#each FONTS_LATIN as font}
+								<option value={font.id}>{tr('font_' + font.id)}</option>
+							{/each}
+						</select>
+					</label>
+
+					<label class="setting-item">
+						<span class="setting-label">{tr('fontArabic')}</span>
+						<select
+							class="setting-select"
+							value={data.settings.fontArabic || 'vazirmatn'}
+							onchange={(e) => changeSetting('fontArabic', e.target.value)}
+						>
+							{#each FONTS_ARABIC as font}
+								<option value={font.id}>{tr('font_' + font.id)}</option>
+							{/each}
+						</select>
+					</label>
+
 					<label class="setting-item" title={tr('colorTooltip')}>
 						<span class="setting-label">{tr('color')}</span>
 						<input
@@ -1824,6 +1985,55 @@
 					<button class="setting-btn" onclick={handleExport}>{tr('export')}</button>
 					<button class="setting-btn" onclick={handleImport}>{tr('import')}</button>
 					<button class="setting-btn reset-btn" onclick={handleResetSettings}>{uiDir === 'rtl' ? 'ریست' : 'reset'}</button>
+				</div>
+
+				<div class="credits">
+					<div class="credits-section">
+						<div class="credits-title">{tr('about')}</div>
+						<p>{tr('aboutText')}</p>
+					</div>
+
+					<div class="credits-section">
+						<div class="credits-title">{tr('howto')}</div>
+						<p>{tr('howtoText')}</p>
+					</div>
+
+					<div class="credits-section">
+						<div class="credits-title">{tr('poet')}</div>
+						<p>
+							<a href="https://en.wikipedia.org/wiki/Omar_Khayyam" target="_blank" rel="noopener">Omar Khayyam</a>
+							{tr('poetText')}
+						</p>
+					</div>
+
+					<div class="credits-section">
+						<div class="credits-title">{tr('credits')}</div>
+						<p>
+							{tr('builtWith')}
+							<a href="https://svelte.dev" target="_blank" rel="noopener">Svelte 5</a>,
+							<a href="https://kit.svelte.dev" target="_blank" rel="noopener">SvelteKit</a>,
+							<a href="https://threejs.org" target="_blank" rel="noopener">Three.js</a>,
+							<a href="https://protectwise.github.io/troika/troika-three-text/" target="_blank" rel="noopener">Troika</a>,
+							<a href="https://github.com/nbd-wtf/nostr-tools" target="_blank" rel="noopener">nostr-tools</a>,
+							<a href="https://yjs.dev" target="_blank" rel="noopener">Yjs</a>
+						</p>
+						<p>
+							{tr('fontsBy')}
+							<a href="https://rastikerdar.github.io/vazirmatn/" target="_blank" rel="noopener">Vazirmatn</a> (Saber Rastikerdar),
+							Helvetiker (Three.js)
+						</p>
+						<p>
+							{tr('textsFrom')}
+							<a href="https://github.com/mehdisadeghi" target="_blank" rel="noopener">Mehdi Sadeghi</a> (FA),
+							<a href="https://www.okonlife.com/poems/" target="_blank" rel="noopener">Shahriar Shahriari</a> (EN),
+							Unknown (DE)
+						</p>
+						<p>
+							{tr('madeWith')}
+							<a href="https://claude.ai/claude-code" target="_blank" rel="noopener">Claude Code</a>
+						</p>
+						<p class="credits-date">Public Domain 2025</p>
+					</div>
 				</div>
 			</div>
 		</fieldset>
@@ -2227,6 +2437,7 @@
 		margin-top: 0.5rem;
 		padding: 0.5rem 0.75rem;
 		border-color: var(--border);
+		background: var(--bg-card-alpha);
 	}
 
 	.settings-panel legend {
@@ -2348,6 +2559,50 @@
 		color: var(--text-muted);
 		resize: vertical;
 		line-height: 1.4;
+	}
+
+	.credits {
+		margin-top: 1rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--border);
+		font-size: 0.65rem;
+		color: var(--text-muted);
+		line-height: 1.6;
+	}
+
+	.credits-section {
+		margin-bottom: 0.75rem;
+	}
+
+	.credits-section:last-child {
+		margin-bottom: 0;
+	}
+
+	.credits-title {
+		font-size: 0.625rem;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: 0.25rem;
+		font-weight: 600;
+	}
+
+	.credits-section p {
+		margin: 0.2rem 0;
+	}
+
+	.credits a {
+		color: var(--text);
+		text-decoration: none;
+	}
+
+	.credits a:hover {
+		text-decoration: underline;
+	}
+
+	.credits-date {
+		margin-top: 0.5rem !important;
+		opacity: 0.6;
 	}
 
 	.setting-input {

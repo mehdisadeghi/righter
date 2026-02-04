@@ -84,4 +84,14 @@ export function getTextMeta(lang) {
 	return textMeta[lang] || textMeta.en;
 }
 
+export function getTextByNumber(lang, number, difficulty = 'easy') {
+	const langTexts = texts[lang]?.[difficulty];
+	if (!langTexts) return null;
+	return langTexts.find(item => item.number === number) || null;
+}
+
+export function getAllTexts(lang, difficulty = 'easy') {
+	return texts[lang]?.[difficulty] || [];
+}
+
 export const difficulties = ['easy', 'medium', 'hard', 'expert'];

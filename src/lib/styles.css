@@ -1,9 +1,21 @@
+/* Vazirmatn - bundled with local() fallback for user's installed font */
+@font-face {
+	font-family: 'Vazirmatn';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: local('Vazirmatn'),
+	     local('Vazirmatn Regular'),
+	     url('/fonts/Vazirmatn-Regular.ttf') format('truetype');
+}
+
 :root {
 	--hue: 220;
 	--base-s: 10%;
 
 	--font-size: 1.25rem;
 	--font-family: system-ui, -apple-system, sans-serif;
+	--font-family-arabic: 'Vazirmatn', 'Tahoma', 'Segoe UI', system-ui, sans-serif;
 	--font-family-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
 
 	/* Light mode (default) */
@@ -75,7 +87,7 @@ body {
 }
 
 [dir="rtl"] {
-	font-family: 'Vazirmatn', 'Tahoma', system-ui, sans-serif;
+	font-family: var(--font-family-arabic);
 }
 
 .app {

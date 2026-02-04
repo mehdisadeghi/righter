@@ -4,11 +4,13 @@ import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 
 // Font URLs for Troika (loaded on demand)
-const FONT_VAZIRMATN = 'https://fonts.gstatic.com/s/vazirmatn/v16/Dxx78j6PP2D_kU2muijPEe1n2vVbfJRklWgzORc.ttf';
+// Bundled locally with fallback to Google Fonts if local fails
+const FONT_VAZIRMATN = '/fonts/Vazirmatn-Regular.ttf';
 const FONT_SYSTEM = undefined; // Use Troika's default
 
 // Typeface JSON fonts for TextGeometry (3D extrusion)
-const FONT_TYPEFACE_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_regular.typeface.json';
+// Bundled locally for offline use
+const FONT_TYPEFACE_URL = '/fonts/helvetiker_regular.typeface.json';
 
 // Cache for loaded fonts
 let loadedFont = null;

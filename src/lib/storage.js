@@ -18,6 +18,9 @@ const defaultSettings = {
 	parallax3dTexture: 'solid',
 	parallax3dRainbow: false,
 	dotPattern: true,
+	// Font settings (per script)
+	fontLatin: 'system',
+	fontArabic: 'vazirmatn',
 	// Relay settings - reliable public relays
 	nostrRelays: [
 		'wss://relay.damus.io',
