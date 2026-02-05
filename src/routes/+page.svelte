@@ -22,7 +22,7 @@
 	import { publishRace, fetchMyRaces, publishRoomPresence, fetchActiveRooms, fetchRoomParticipants, DEFAULT_RELAYS } from '$lib/nostr.js';
 	import { fetchFastRelays } from '$lib/relay-discovery.js';
 	import { mergeRaceLists, findMissingRaces } from '$lib/crdt.js';
-	import { isWebGLAvailable, Parallax3DRenderer } from '$lib/parallax3d.js';
+	import { isWebGLAvailable, Parallax3DRenderer, type DebugStats } from '$lib/parallax3d.js';
 
 	const MODES = {
 		time: [15, 30, 60, 120],
@@ -106,6 +106,22 @@
 	let parallax3dRenderer = $state(null);
 	let parallax3dContainer = $state(null);
 	let webglAvailable = $state(false);
+
+	// Debug panel (checkbox persisted, all other debug state is runtime-only)
+	let debugPanel = $derived(data.settings.debugPanel === true);
+	let debugGameMode = $state(false);
+	let debugPaused = $state(false);
+	let debugSpeedMult = $state(1.0);
+	let debugOpacityMult = $state(1.0);
+	let debugDepthMult = $state(1.0);
+	let debugExtrudeMult = $state(0.1);
+	let debugFieldMult = $state(1.0);
+	let debugIntensity: number | null = $state(null);
+	let debugEffect: string | null = $state(null);
+	let debugTexture: string | null = $state(null);
+	let debugRainbow: boolean | null = $state(null);
+	let debugInfo: DebugStats = $state({ fps: 0, laneCount: 0, rendererInfo: '' });
+	let debugPollTimer: ReturnType<typeof setInterval> | null = $state(null);
 
 	// Settings panel toggle
 	let showMoreSettings = $state(false);
@@ -1598,6 +1614,7 @@
 
 		// Spawner function - also used for immediate first spawn
 		const trySpawn = () => {
+			if (parallax3dRenderer?.paused) return;
 			const poolSize = Math.round(LANE_POOL_SIZE * parallaxIntensity);
 			const spawnChance = parallaxIntensity;
 			const currentCount = parallax3dRenderer
@@ -1668,14 +1685,82 @@
 	$effect(() => {
 		if (parallax3dRenderer) {
 			parallax3dRenderer.updateSettings({
-				intensity: parallaxIntensity,
+				intensity: debugPanel && debugIntensity !== null ? debugIntensity : parallaxIntensity,
 				hue: data.settings.hue,
 				isDark: darkMode,
 				isRTL: textDir === 'rtl',
-				effect: parallax3dEffect,
-				texture: parallax3dTexture,
-				rainbow: parallax3dRainbow
+				effect: (debugPanel && debugEffect !== null ? debugEffect : parallax3dEffect) as 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon',
+				texture: (debugPanel && debugTexture !== null ? debugTexture : parallax3dTexture) as 'solid' | 'gradient' | 'metallic' | 'glass',
+				rainbow: debugPanel && debugRainbow !== null ? debugRainbow : parallax3dRainbow
 			});
+		}
+	});
+
+	// Debug panel: poll stats
+	$effect(() => {
+		if (debugPanel && parallax3dRenderer) {
+			debugPollTimer = setInterval(() => {
+				if (parallax3dRenderer) {
+					debugInfo = parallax3dRenderer.getDebugStats();
+				}
+			}, 250);
+		} else if (debugPollTimer) {
+			clearInterval(debugPollTimer);
+			debugPollTimer = null;
+		}
+		return () => {
+			if (debugPollTimer) {
+				clearInterval(debugPollTimer);
+				debugPollTimer = null;
+			}
+		};
+	});
+
+	// Debug panel: push overrides
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setDebugOverrides({
+				speedMultiplier: debugSpeedMult,
+				opacityMultiplier: debugOpacityMult,
+				depthMultiplier: debugDepthMult,
+				extrudeMultiplier: debugExtrudeMult,
+				fieldMultiplier: debugFieldMult
+			});
+		}
+	});
+
+	// Debug panel: push pause
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setPaused(debugPaused);
+		}
+	});
+
+	// Debug panel: push game mode
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.gameMode = debugGameMode;
+		}
+	});
+
+	// Debug panel: reset on close
+	$effect(() => {
+		if (!debugPanel) {
+			debugPaused = false;
+			debugSpeedMult = 1.0;
+			debugOpacityMult = 1.0;
+			debugDepthMult = 1.0;
+			debugExtrudeMult = 0.1;
+			debugFieldMult = 1.0;
+			debugIntensity = null;
+			debugEffect = null;
+			debugTexture = null;
+			debugRainbow = null;
+			debugGameMode = false;
+			if (parallax3dRenderer) {
+				parallax3dRenderer.setPaused(false);
+				parallax3dRenderer.setDebugOverrides({ speedMultiplier: 1, opacityMultiplier: 1, depthMultiplier: 1, extrudeMultiplier: 0.1, fieldMultiplier: 1 });
+			}
 		}
 	});
 
@@ -1703,6 +1788,7 @@
 <div
 	class="app"
 	class:parallax={parallax}
+	class:debug-game-mode={debugGameMode}
 	dir={uiDir}
 	style="--font-size: {data.settings.fontSize}rem;"
 >
@@ -1953,6 +2039,15 @@
 							type="checkbox"
 							checked={parallax3dRainbow}
 							onchange={(e) => changeSetting('parallax3dRainbow', e.target.checked)}
+						/>
+					</label>
+
+					<label class="setting-item" title="Debug panel">
+						<span class="setting-label">Debug</span>
+						<input
+							type="checkbox"
+							checked={debugPanel}
+							onchange={(e) => changeSetting('debugPanel', e.target.checked)}
 						/>
 					</label>
 					{/if}
@@ -2393,4 +2488,88 @@
 
 	<div class="build-date">{__BUILD_DATE__}</div>
 </div>
+
+{#if debugPanel && parallax3dRenderer}
+<div class="debug-panel">
+	<div class="debug-stats">
+		<span>FPS: {debugInfo.fps}</span>
+		<span>Lanes: {debugInfo.laneCount}</span>
+		<span title={debugInfo.rendererInfo}>{debugInfo.rendererInfo.length > 28 ? debugInfo.rendererInfo.slice(0, 28) + '...' : debugInfo.rendererInfo}</span>
+	</div>
+	<div class="debug-controls">
+		<label class="debug-control">
+			Speed
+			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugSpeedMult} />
+			{debugSpeedMult.toFixed(1)}x
+		</label>
+		<label class="debug-control">
+			Opacity
+			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugOpacityMult} />
+			{debugOpacityMult.toFixed(1)}x
+		</label>
+		<label class="debug-control">
+			Depth
+			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugDepthMult} />
+			{debugDepthMult.toFixed(1)}x
+		</label>
+		<label class="debug-control">
+			Height
+			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugExtrudeMult} />
+			{debugExtrudeMult.toFixed(1)}x
+		</label>
+		<label class="debug-control">
+			Field
+			<input type="range" min="0.2" max="5" step="0.1" bind:value={debugFieldMult} />
+			{debugFieldMult.toFixed(1)}x
+		</label>
+		<label class="debug-control">
+			Intensity
+			<input type="range" min="0.5" max="3" step="0.25"
+				value={debugIntensity !== null ? debugIntensity : parallaxIntensity}
+				oninput={(e) => { debugIntensity = parseFloat(e.target.value); }}
+			/>
+			{(debugIntensity !== null ? debugIntensity : parallaxIntensity).toFixed(1)}
+		</label>
+		<button class="debug-btn" onclick={() => { debugPaused = !debugPaused; }}>
+			{debugPaused ? 'Play' : 'Pause'}
+		</button>
+		<button class="debug-btn" onclick={() => { debugGameMode = !debugGameMode; }}>
+			{debugGameMode ? 'Game on' : 'Game off'}
+		</button>
+		<label class="debug-control">
+			Rainbow
+			<input type="checkbox"
+				checked={debugRainbow !== null ? debugRainbow : parallax3dRainbow}
+				onchange={(e) => { debugRainbow = e.target.checked; }}
+			/>
+		</label>
+		<label class="debug-control">
+			Effect
+			<select class="debug-select"
+				value={debugEffect !== null ? debugEffect : parallax3dEffect}
+				onchange={(e) => { debugEffect = e.target.value; }}
+			>
+				<option value="none">none</option>
+				<option value="outline">outline</option>
+				<option value="shadow">shadow</option>
+				<option value="emboss">emboss</option>
+				<option value="extrude">extrude</option>
+				<option value="neon">neon</option>
+			</select>
+		</label>
+		<label class="debug-control">
+			Texture
+			<select class="debug-select"
+				value={debugTexture !== null ? debugTexture : parallax3dTexture}
+				onchange={(e) => { debugTexture = e.target.value; }}
+			>
+				<option value="solid">solid</option>
+				<option value="gradient">gradient</option>
+				<option value="metallic">metallic</option>
+				<option value="glass">glass</option>
+			</select>
+		</label>
+	</div>
+</div>
+{/if}
 

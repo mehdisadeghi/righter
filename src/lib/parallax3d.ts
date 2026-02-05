@@ -85,6 +85,20 @@ interface Lane {
 	isTroika: boolean;
 }
 
+interface DebugOverrides {
+	speedMultiplier: number;
+	opacityMultiplier: number;
+	depthMultiplier: number;
+	extrudeMultiplier: number;
+	fieldMultiplier: number;
+}
+
+export interface DebugStats {
+	fps: number;
+	laneCount: number;
+	rendererInfo: string;
+}
+
 export class Parallax3DRenderer {
 	container: HTMLElement;
 	lanes: Map<number, Lane>;
@@ -110,6 +124,14 @@ export class Parallax3DRenderer {
 	disposed: boolean;
 	font: Font | null;
 	contextLost: boolean;
+	gameMode: boolean;
+
+	fps: number;
+	paused: boolean;
+	private _fpsFrameCount: number;
+	private _fpsLastTime: number;
+	private _pauseStartTime: number;
+	private _debugOverrides: DebugOverrides;
 
 	scene!: THREE.Scene;
 	camera!: THREE.PerspectiveCamera;
@@ -146,6 +168,14 @@ export class Parallax3DRenderer {
 		this.disposed = false;
 		this.font = null;
 		this.contextLost = false;
+		this.gameMode = false;
+
+		this.fps = 0;
+		this.paused = false;
+		this._fpsFrameCount = 0;
+		this._fpsLastTime = performance.now();
+		this._pauseStartTime = 0;
+		this._debugOverrides = { speedMultiplier: 1, opacityMultiplier: 1, depthMultiplier: 1, extrudeMultiplier: 0.1, fieldMultiplier: 1 };
 
 		this._init();
 		this._loadFont();
@@ -308,7 +338,7 @@ export class Parallax3DRenderer {
 	}
 
 	_onWheel(e: WheelEvent): void {
-		if (!e.ctrlKey) return;
+		if (!e.ctrlKey && !this.gameMode) return;
 
 		e.preventDefault();
 
@@ -323,8 +353,9 @@ export class Parallax3DRenderer {
 		const fogColor = new THREE.Color(`hsl(${this.hue}, 10%, ${fogL}%)`);
 
 		const viewportSize = Math.max(window.innerWidth, window.innerHeight);
-		const fogNear = viewportSize * 0.8;
-		const fogFar = viewportSize * 1.2;
+		const fm = this._debugOverrides.fieldMultiplier;
+		const fogNear = viewportSize * 0.8 * fm;
+		const fogFar = viewportSize * 1.2 * fm;
 
 		this.scene.fog = new THREE.Fog(fogColor, fogNear, fogFar);
 	}
@@ -557,7 +588,7 @@ export class Parallax3DRenderer {
 		group.userData.textMeshes = [];
 
 		const depthLayers = 10;
-		const depthStep = fontSize * 0.25;
+		const depthStep = fontSize * 0.25 * this._debugOverrides.extrudeMultiplier;
 
 		for (let i = 0; i < depthLayers; i++) {
 			const textMesh = new Text();
@@ -594,7 +625,7 @@ export class Parallax3DRenderer {
 	}
 
 	_createExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Object3D {
-		const depth = fontSize * 2;
+		const depth = fontSize * 2 * this._debugOverrides.extrudeMultiplier;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
 
@@ -646,7 +677,7 @@ export class Parallax3DRenderer {
 	}
 
 	_createArabicExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Mesh | null {
-		const depth = fontSize * 2;
+		const depth = fontSize * 2 * this._debugOverrides.extrudeMultiplier;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
 
@@ -859,7 +890,7 @@ export class Parallax3DRenderer {
 
 		const fontSize = 20 + Math.pow(sizeRand, 2) * 80 * intensity;
 		const opacityMultiplier = this.isDark ? 1 : 2.5;
-		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier;
+		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier * this._debugOverrides.opacityMultiplier;
 
 		let mesh: THREE.Object3D;
 		let texture: THREE.CanvasTexture | null = null;
@@ -885,7 +916,7 @@ export class Parallax3DRenderer {
 			estimatedWidth = result.width;
 		}
 
-		const z = -100 - depthRand * 600 * intensity;
+		const z = -100 - depthRand * 600 * intensity * this._debugOverrides.depthMultiplier;
 		const y = (Math.random() - 0.5) * 800;
 
 		const cameraZ = this.camera.position.z;
@@ -904,7 +935,7 @@ export class Parallax3DRenderer {
 		const endX = direction === 'rtl' ? deleteOffset : -deleteOffset;
 
 		const totalDistance = Math.abs(endX - startX);
-		const baseSpeed = (250 + Math.pow(speedRand, 2) * 400) * intensity;
+		const baseSpeed = (250 + Math.pow(speedRand, 2) * 400) * intensity * this._debugOverrides.speedMultiplier;
 		const sizeFactor = 1 / (1 + fontSize / 150);
 		const duration = totalDistance / (baseSpeed * sizeFactor);
 
@@ -996,6 +1027,47 @@ export class Parallax3DRenderer {
 		return this.lanes.size;
 	}
 
+	setPaused(paused: boolean): void {
+		if (paused && !this.paused) {
+			this._pauseStartTime = performance.now();
+		} else if (!paused && this.paused) {
+			const pausedDuration = performance.now() - this._pauseStartTime;
+			for (const lane of this.lanes.values()) {
+				lane.startTime += pausedDuration;
+			}
+		}
+		this.paused = paused;
+	}
+
+	setDebugOverrides(overrides: Partial<DebugOverrides>): void {
+		if (overrides.speedMultiplier !== undefined) this._debugOverrides.speedMultiplier = overrides.speedMultiplier;
+		if (overrides.opacityMultiplier !== undefined) this._debugOverrides.opacityMultiplier = overrides.opacityMultiplier;
+		if (overrides.depthMultiplier !== undefined) this._debugOverrides.depthMultiplier = overrides.depthMultiplier;
+		if (overrides.extrudeMultiplier !== undefined) this._debugOverrides.extrudeMultiplier = overrides.extrudeMultiplier;
+		if (overrides.fieldMultiplier !== undefined) {
+			this._debugOverrides.fieldMultiplier = overrides.fieldMultiplier;
+			this._updateFog();
+		}
+	}
+
+	getDebugStats(): DebugStats {
+		let rendererInfo = '';
+		try {
+			const gl = this.renderer.getContext();
+			const ext = gl.getExtension('WEBGL_debug_renderer_info');
+			if (ext) {
+				rendererInfo = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string;
+			}
+		} catch {
+			// Extension not available
+		}
+		return {
+			fps: this.fps,
+			laneCount: this.lanes.size,
+			rendererInfo
+		};
+	}
+
 	_animate(): void {
 		if (this.disposed) return;
 
@@ -1004,6 +1076,13 @@ export class Parallax3DRenderer {
 		if (this.contextLost) return;
 
 		const now = performance.now();
+
+		this._fpsFrameCount++;
+		if (now - this._fpsLastTime >= 1000) {
+			this.fps = this._fpsFrameCount;
+			this._fpsFrameCount = 0;
+			this._fpsLastTime = now;
+		}
 
 		if (!this.isDragging) {
 			const dt = 16;
@@ -1025,21 +1104,24 @@ export class Parallax3DRenderer {
 
 		this.scene.rotation.x = this.rotationX;
 		this.scene.rotation.y = this.rotationY;
-		const toRemove: number[] = [];
 
-		for (const [id, lane] of this.lanes) {
-			const elapsed = now - lane.startTime;
-			const progress = elapsed / lane.duration;
+		if (!this.paused) {
+			const toRemove: number[] = [];
 
-			if (progress >= 1) {
-				toRemove.push(id);
-			} else {
-				lane.mesh.position.x = lane.startX + (lane.endX - lane.startX) * progress;
+			for (const [id, lane] of this.lanes) {
+				const elapsed = now - lane.startTime;
+				const progress = elapsed / lane.duration;
+
+				if (progress >= 1) {
+					toRemove.push(id);
+				} else {
+					lane.mesh.position.x = lane.startX + (lane.endX - lane.startX) * progress;
+				}
 			}
-		}
 
-		for (const id of toRemove) {
-			this.removeLane(id);
+			for (const id of toRemove) {
+				this.removeLane(id);
+			}
 		}
 
 		this.renderer.render(this.scene, this.camera);
