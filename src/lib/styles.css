@@ -1265,7 +1265,7 @@ body {
 
 /* Game mode: hide all UI except background layers */
 
-.app.debug-game-mode > *:not(.background-effects):not(.parallax3d-container):not(.background-lanes) {
+.app.debug-game-mode > *:not(.background-effects):not(.parallax3d-container):not(.background-lanes):not(.invader-hud):not(.invader-gameover) {
 	display: none;
 }
 
@@ -1273,7 +1273,7 @@ body {
 
 .debug-panel {
 	position: fixed;
-	bottom: 0.5rem;
+	top: 0.5rem;
 	left: 0.5rem;
 	z-index: 50;
 	background: hsla(var(--hue), var(--base-s), 10%, 0.75);
@@ -1281,17 +1281,21 @@ body {
 	-webkit-backdrop-filter: blur(4px);
 	border: 1px solid hsla(var(--hue), var(--base-s), 30%, 0.4);
 	border-radius: 0.25rem;
-	padding: 0.375rem 0.5rem;
+	padding: 0.5rem 0.5rem;
 	font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
 	font-size: 0.625rem;
 	color: hsla(var(--hue), var(--base-s), 80%, 0.9);
-	max-width: 22rem;
+	width: 10rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
 }
 
 .debug-stats {
 	display: flex;
-	gap: 0.75rem;
-	margin-bottom: 0.375rem;
+	flex-direction: column;
+	gap: 0.125rem;
+	margin-bottom: 0.25rem;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -1303,21 +1307,22 @@ body {
 
 .debug-controls {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 0.25rem 0.5rem;
-	align-items: center;
+	flex-direction: column;
+	gap: 0.25rem;
 }
 
 .debug-control {
-	display: inline-flex;
+	display: flex;
 	align-items: center;
 	gap: 0.25rem;
 	font-size: 0.625rem;
 	color: hsla(var(--hue), var(--base-s), 70%, 0.8);
+	white-space: nowrap;
 }
 
 .debug-control input[type="range"] {
-	width: 3rem;
+	flex: 1;
+	min-width: 0;
 	height: 0.5rem;
 	cursor: pointer;
 	accent-color: hsla(var(--hue), 20%, 60%, 0.8);
@@ -1327,6 +1332,7 @@ body {
 	cursor: pointer;
 	width: 0.75rem;
 	height: 0.75rem;
+	margin-left: auto;
 }
 
 .debug-select {
@@ -1338,10 +1344,11 @@ body {
 	border-radius: 0.15rem;
 	color: hsla(var(--hue), var(--base-s), 75%, 0.9);
 	cursor: pointer;
+	margin-left: auto;
 }
 
 .debug-btn {
-	padding: 0.1rem 0.3rem;
+	padding: 0.2rem 0.3rem;
 	font-family: inherit;
 	font-size: 0.6rem;
 	background: hsla(var(--hue), var(--base-s), 15%, 0.8);
@@ -1349,8 +1356,107 @@ body {
 	border-radius: 0.15rem;
 	color: hsla(var(--hue), var(--base-s), 75%, 0.9);
 	cursor: pointer;
+	width: 100%;
+	text-align: left;
 }
 
 .debug-btn:hover {
 	background: hsla(var(--hue), var(--base-s), 25%, 0.8);
+}
+
+.debug-btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.debug-help {
+	margin-top: auto;
+	font-size: 0.6rem;
+	color: hsla(var(--hue), var(--base-s), 70%, 0.7);
+}
+
+.debug-help summary {
+	cursor: pointer;
+	opacity: 0.5;
+	width: fit-content;
+}
+
+.debug-help-content {
+	margin-top: 0.25rem;
+	font-family: monospace;
+	white-space: pre;
+	line-height: 1.5;
+}
+
+.debug-help-content b {
+	color: hsla(var(--hue), var(--base-s), 80%, 0.8);
+}
+
+/* Invader HUD */
+.invader-hud {
+	position: fixed;
+	top: 0.5rem;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 40;
+	display: flex;
+	gap: 1.5rem;
+	font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+	font-size: 0.875rem;
+	color: hsla(var(--hue), var(--base-s), 85%, 0.95);
+	background: hsla(var(--hue), var(--base-s), 10%, 0.6);
+	backdrop-filter: blur(4px);
+	-webkit-backdrop-filter: blur(4px);
+	border: 1px solid hsla(var(--hue), var(--base-s), 30%, 0.4);
+	border-radius: 0.25rem;
+	padding: 0.25rem 0.75rem;
+	pointer-events: none;
+	letter-spacing: 0.05em;
+}
+
+.invader-gameover {
+	position: fixed;
+	inset: 0;
+	z-index: 45;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: hsla(var(--hue), var(--base-s), 5%, 0.6);
+	backdrop-filter: blur(2px);
+	-webkit-backdrop-filter: blur(2px);
+}
+
+.invader-gameover-box {
+	text-align: center;
+	font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+	color: hsla(var(--hue), var(--base-s), 85%, 0.95);
+	background: hsla(var(--hue), var(--base-s), 10%, 0.8);
+	border: 1px solid hsla(var(--hue), var(--base-s), 30%, 0.5);
+	border-radius: 0.5rem;
+	padding: 1.5rem 2.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.invader-gameover-title {
+	font-size: 1.5rem;
+	font-weight: bold;
+	margin-bottom: 0.25rem;
+}
+
+.invader-restart-btn {
+	margin-top: 0.5rem;
+	padding: 0.375rem 1rem;
+	font-family: inherit;
+	font-size: 0.8rem;
+	color: hsla(var(--hue), var(--base-s), 85%, 0.95);
+	background: hsla(var(--hue), var(--base-s), 25%, 0.7);
+	border: 1px solid hsla(var(--hue), var(--base-s), 40%, 0.5);
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+
+.invader-restart-btn:hover {
+	background: hsla(var(--hue), var(--base-s), 35%, 0.7);
 }

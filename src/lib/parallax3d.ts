@@ -1,10 +1,36 @@
-import * as THREE from 'three';
+import {
+	AmbientLight,
+	AxesHelper,
+	CanvasTexture,
+	Color,
+	DirectionalLight,
+	DoubleSide,
+	Fog,
+	GridHelper,
+	Group,
+	LinearFilter,
+	Mesh,
+	MeshBasicMaterial,
+	MeshStandardMaterial,
+	Object3D,
+	PCFSoftShadowMap,
+	PerspectiveCamera,
+	PlaneGeometry,
+	Scene,
+	SphereGeometry,
+	SpotLight,
+	Vector3,
+	WebGLRenderer,
+	type LineBasicMaterial
+} from 'three';
 import { Text } from 'troika-three-text';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import type { Font } from 'three/addons/loaders/FontLoader.js';
 import { loadFont as loadOpenTypeFont, createArabicExtrudedText } from './arabic-extrude.js';
 import type { Font as OpenTypeFont } from 'opentype.js';
+import { ScriptInvaderGame, type HitEffectType } from './game.js';
+import type { DebugStats } from './webgl.js';
 
 const FONT_VAZIRMATN = 'fonts/Vazirmatn-Regular.ttf';
 const FONT_SYSTEM: undefined = undefined;
@@ -43,27 +69,11 @@ async function loadArabicFont(): Promise<OpenTypeFont | null> {
 	return arabicFontPromise;
 }
 
-let webglSupported: boolean | null = null;
+type EffectType = 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon' | 'random';
+type TextureType = 'solid' | 'gradient' | 'metallic' | 'glass' | 'random';
 
-export function isWebGLAvailable(): boolean {
-	if (webglSupported !== null) return webglSupported;
-
-	try {
-		const canvas = document.createElement('canvas');
-		const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-		webglSupported = !!gl;
-		if (gl) {
-			const ext = gl.getExtension('WEBGL_lose_context');
-			if (ext) ext.loseContext();
-		}
-	} catch {
-		webglSupported = false;
-	}
-	return webglSupported!;
-}
-
-type EffectType = 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon';
-type TextureType = 'solid' | 'gradient' | 'metallic' | 'glass';
+const CONCRETE_EFFECTS: EffectType[] = ['none', 'outline', 'shadow', 'emboss', 'extrude', 'neon'];
+const CONCRETE_TEXTURES: TextureType[] = ['solid', 'gradient', 'metallic', 'glass'];
 
 interface RendererOptions {
 	intensity?: number;
@@ -76,28 +86,45 @@ interface RendererOptions {
 }
 
 interface Lane {
-	mesh: THREE.Object3D;
+	mesh: Object3D;
 	startX: number;
 	endX: number;
+	startY: number;
+	endY: number;
 	startTime: number;
 	duration: number;
-	texture: THREE.CanvasTexture | null;
+	texture: CanvasTexture | null;
 	isTroika: boolean;
+	width: number;
+	height: number;
 }
 
 interface DebugOverrides {
 	speedMultiplier: number;
-	opacityMultiplier: number;
-	depthMultiplier: number;
 	extrudeMultiplier: number;
-	fieldMultiplier: number;
 }
 
-export interface DebugStats {
-	fps: number;
-	laneCount: number;
-	rendererInfo: string;
+export type { DebugStats } from './webgl.js';
+
+interface FlyState {
+	yaw: number;
+	pitch: number;
+	roll: number;
+	keysHeld: Set<string>;
+	speed: number;
+	lookVelocityX: number;
+	lookVelocityY: number;
+	savedOrbit: {
+		orbitRadius: number;
+		rotationX: number;
+		rotationY: number;
+		velocityX: number;
+		velocityY: number;
+	};
 }
+
+const FLY_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyQ', 'KeyE', 'KeyR']);
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'KeyR', 'Space']);
 
 export class Parallax3DRenderer {
 	container: HTMLElement;
@@ -119,6 +146,11 @@ export class Parallax3DRenderer {
 	lastMouseX: number;
 	lastMouseY: number;
 	lastDragTime: number;
+	_dragButton: number;
+	private _orbitRadius: number;
+	private _orbitTarget: Vector3;
+	private _gameKeysHeld: Set<string>;
+	private _gameSpeed: number;
 
 	animationId: number | null;
 	disposed: boolean;
@@ -128,20 +160,40 @@ export class Parallax3DRenderer {
 
 	fps: number;
 	paused: boolean;
+	onPauseToggle: ((paused: boolean) => void) | null;
+	flyMode: boolean;
+	invaderMode: boolean;
+	fallingText: boolean;
+	noFog: boolean;
+	private _fly: FlyState | null;
+	private _game: ScriptInvaderGame | null;
+	private _lastFrameTime: number;
 	private _fpsFrameCount: number;
 	private _fpsLastTime: number;
 	private _pauseStartTime: number;
 	private _debugOverrides: DebugOverrides;
+	private _axesGroup: Group | null;
+	onScoreChange: ((score: number) => void) | null;
+	onInvaderStatsChange: ((stats: import('./game.js').InvaderStats) => void) | null;
+	onInvaderExit: (() => void) | null;
 
-	scene!: THREE.Scene;
-	camera!: THREE.PerspectiveCamera;
-	renderer!: THREE.WebGLRenderer;
+	scene!: Scene;
+	camera!: PerspectiveCamera;
+	renderer!: WebGLRenderer;
+	private _ambientLight!: AmbientLight;
+	private _debugLightGroup: Group | null;
+	private _debugSpot: SpotLight | null;
 
 	private _boundResize!: () => void;
 	private _boundMouseDown!: (e: MouseEvent) => void;
 	private _boundMouseUp!: () => void;
 	private _boundMouseMove!: (e: MouseEvent) => void;
 	private _boundWheel!: (e: WheelEvent) => void;
+	private _boundFlyKeyDown!: (e: KeyboardEvent) => void;
+	private _boundFlyKeyUp!: (e: KeyboardEvent) => void;
+	private _boundFlyBlur!: () => void;
+	private _boundGameKeyDown!: (e: KeyboardEvent) => void;
+	private _boundGameKeyUp!: (e: KeyboardEvent) => void;
 
 	constructor(container: HTMLElement, options: RendererOptions = {}) {
 		this.container = container;
@@ -163,6 +215,11 @@ export class Parallax3DRenderer {
 		this.lastMouseX = 0;
 		this.lastMouseY = 0;
 		this.lastDragTime = 0;
+		this._dragButton = 0;
+		this._orbitRadius = 800;
+		this._orbitTarget = new Vector3(0, 0, 0);
+		this._gameKeysHeld = new Set();
+		this._gameSpeed = 400;
 
 		this.animationId = null;
 		this.disposed = false;
@@ -172,10 +229,24 @@ export class Parallax3DRenderer {
 
 		this.fps = 0;
 		this.paused = false;
+		this.onPauseToggle = null;
+		this.flyMode = false;
+		this.invaderMode = false;
+		this.fallingText = false;
+		this.noFog = false;
+		this._fly = null;
+		this._game = null;
+		this._lastFrameTime = performance.now();
 		this._fpsFrameCount = 0;
 		this._fpsLastTime = performance.now();
 		this._pauseStartTime = 0;
-		this._debugOverrides = { speedMultiplier: 1, opacityMultiplier: 1, depthMultiplier: 1, extrudeMultiplier: 0.1, fieldMultiplier: 1 };
+		this._debugOverrides = { speedMultiplier: 1, extrudeMultiplier: 0.1 };
+		this._axesGroup = null;
+		this._debugLightGroup = null;
+		this._debugSpot = null;
+		this.onScoreChange = null;
+		this.onInvaderStatsChange = null;
+		this.onInvaderExit = null;
 
 		this._init();
 		this._loadFont();
@@ -222,25 +293,25 @@ export class Parallax3DRenderer {
 		const width = window.innerWidth;
 		const height = window.innerHeight;
 
-		this.scene = new THREE.Scene();
+		this.scene = new Scene();
 
 		this._updateFog();
 
-		const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-		this.scene.add(ambientLight);
+		this._ambientLight = new AmbientLight(0xffffff, 0.6);
+		this.scene.add(this._ambientLight);
 
-		const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+		const directionalLight = new DirectionalLight(0xffffff, 0.8);
 		directionalLight.position.set(1, 1, 1);
 		this.scene.add(directionalLight);
 
-		const backLight = new THREE.DirectionalLight(0xffffff, 0.3);
+		const backLight = new DirectionalLight(0xffffff, 0.3);
 		backLight.position.set(-1, -1, -1);
 		this.scene.add(backLight);
 
-		this.camera = new THREE.PerspectiveCamera(60, width / height, 1, 50000);
+		this.camera = new PerspectiveCamera(60, width / height, 1, 50000);
 		this.camera.position.z = 800;
 
-		this.renderer = new THREE.WebGLRenderer({
+		this.renderer = new WebGLRenderer({
 			antialias: true,
 			alpha: true,
 			powerPreference: 'high-performance'
@@ -270,6 +341,11 @@ export class Parallax3DRenderer {
 		this._boundMouseUp = this._onMouseUp.bind(this);
 		this._boundMouseMove = this._onMouseMove.bind(this);
 		this._boundWheel = this._onWheel.bind(this);
+		this._boundFlyKeyDown = this._onFlyKeyDown.bind(this);
+		this._boundFlyKeyUp = this._onFlyKeyUp.bind(this);
+		this._boundFlyBlur = () => { if (this._fly) this._fly.keysHeld.clear(); };
+		this._boundGameKeyDown = this._onGameKeyDown.bind(this);
+		this._boundGameKeyUp = this._onGameKeyUp.bind(this);
 
 		window.addEventListener('resize', this._boundResize);
 		window.addEventListener('mousedown', this._boundMouseDown);
@@ -290,18 +366,26 @@ export class Parallax3DRenderer {
 	}
 
 	_onMouseDown(e: MouseEvent): void {
+		if (e.button === 2) return;
+
 		const target = e.target as HTMLElement;
 		const isInteractive = target.closest('button, input, select, textarea, a, label, .settings-panel, .metrics-bar, .text-display, .input-area, .controls, .keyboard-container, .results-panel, .multiplayer-panel');
 		if (isInteractive) return;
 
 		e.preventDefault();
+		if (document.activeElement instanceof HTMLElement) {
+			document.activeElement.blur();
+		}
 
+		this._dragButton = e.button;
 		this.isDragging = true;
 		this.lastMouseX = e.clientX;
 		this.lastMouseY = e.clientY;
 		this.lastDragTime = performance.now();
-		this.velocityX = 0;
-		this.velocityY = 0;
+		if (e.button === 0) {
+			this.velocityX = 0;
+			this.velocityY = 0;
+		}
 		document.body.style.userSelect = 'none';
 	}
 
@@ -310,6 +394,7 @@ export class Parallax3DRenderer {
 			document.body.style.userSelect = '';
 		}
 		this.isDragging = false;
+		this._dragButton = 0;
 	}
 
 	_onMouseMove(e: MouseEvent): void {
@@ -320,17 +405,24 @@ export class Parallax3DRenderer {
 		const deltaX = e.clientX - this.lastMouseX;
 		const deltaY = e.clientY - this.lastMouseY;
 
-		const sensitivity = 0.003;
+		if (this._dragButton === 1 && this.flyMode && this._fly) {
+			this._panCamera(deltaX, deltaY);
+		} else if (this.flyMode && this._fly) {
+			const sensitivity = 0.003;
+			this._fly.yaw -= deltaX * sensitivity;
+			this._fly.pitch -= deltaY * sensitivity;
+			this._fly.lookVelocityX = (-deltaY * sensitivity) / dt;
+			this._fly.lookVelocityY = (-deltaX * sensitivity) / dt;
+		} else if (this._dragButton === 0) {
+			this._panOrbitTarget(deltaX, deltaY);
+		} else {
+			const sensitivity = 0.003;
+			this.rotationY -= deltaX * sensitivity;
+			this.rotationX -= deltaY * sensitivity;
 
-		this.rotationY -= deltaX * sensitivity;
-		this.rotationX -= deltaY * sensitivity;
-
-		const maxRotation = 0.8;
-		this.rotationX = Math.max(-maxRotation, Math.min(maxRotation, this.rotationX));
-		this.rotationY = Math.max(-maxRotation, Math.min(maxRotation, this.rotationY));
-
-		this.velocityX = (-deltaY * sensitivity) / dt;
-		this.velocityY = (-deltaX * sensitivity) / dt;
+			this.velocityX = (-deltaY * sensitivity) / dt;
+			this.velocityY = (-deltaX * sensitivity) / dt;
+		}
 
 		this.lastMouseX = e.clientX;
 		this.lastMouseY = e.clientY;
@@ -338,6 +430,20 @@ export class Parallax3DRenderer {
 	}
 
 	_onWheel(e: WheelEvent): void {
+		if (this.flyMode && this._fly) {
+			e.preventDefault();
+			const factor = e.deltaY > 0 ? 0.85 : 1.18;
+			this._fly.speed = Math.max(20, Math.min(10000, this._fly.speed * factor));
+			return;
+		}
+
+		if (this.gameMode && e.ctrlKey) {
+			e.preventDefault();
+			const factor = e.deltaY > 0 ? 0.85 : 1.18;
+			this._gameSpeed = Math.max(20, Math.min(10000, this._gameSpeed * factor));
+			return;
+		}
+
 		if (!e.ctrlKey && !this.gameMode) return;
 
 		e.preventDefault();
@@ -345,22 +451,25 @@ export class Parallax3DRenderer {
 		const zoomSpeed = 100;
 		const delta = e.deltaY > 0 ? zoomSpeed : -zoomSpeed;
 
-		this.camera.position.z = Math.max(50, Math.min(15000, this.camera.position.z + delta));
+		this._orbitRadius = Math.max(1, this._orbitRadius + delta);
 	}
 
 	_updateFog(): void {
+		if (this.noFog) {
+			this.scene.fog = null;
+			return;
+		}
 		const fogL = this.isDark ? 10 : 97;
-		const fogColor = new THREE.Color(`hsl(${this.hue}, 10%, ${fogL}%)`);
+		const fogColor = new Color(`hsl(${this.hue}, 10%, ${fogL}%)`);
 
 		const viewportSize = Math.max(window.innerWidth, window.innerHeight);
-		const fm = this._debugOverrides.fieldMultiplier;
-		const fogNear = viewportSize * 0.8 * fm;
-		const fogFar = viewportSize * 1.2 * fm;
+		const fogNear = viewportSize * 0.8;
+		const fogFar = viewportSize * 1.2;
 
-		this.scene.fog = new THREE.Fog(fogColor, fogNear, fogFar);
+		this.scene.fog = new Fog(fogColor, fogNear, fogFar);
 	}
 
-	_createTextTexture(text: string, fontSize: number): { texture: THREE.CanvasTexture; width: number; height: number } {
+	_createTextTexture(text: string, fontSize: number): { texture: CanvasTexture; width: number; height: number } {
 		const canvas = document.createElement('canvas');
 		const ctx = canvas.getContext('2d')!;
 
@@ -386,9 +495,9 @@ export class Parallax3DRenderer {
 		ctx.fillStyle = baseColor;
 		ctx.fillText(text, centerX, centerY);
 
-		const texture = new THREE.CanvasTexture(canvas);
-		texture.minFilter = THREE.LinearFilter;
-		texture.magFilter = THREE.LinearFilter;
+		const texture = new CanvasTexture(canvas);
+		texture.minFilter = LinearFilter;
+		texture.magFilter = LinearFilter;
 
 		return { texture, width: canvas.width, height: canvas.height };
 	}
@@ -419,7 +528,7 @@ export class Parallax3DRenderer {
 		}
 	}
 
-	_createTroikaText(text: string, fontSize: number, opacity: number): THREE.Object3D {
+	_createTroikaText(text: string, fontSize: number, opacity: number): Object3D {
 		const baseL = this.isDark ? 70 : 35;
 		const baseSat = 20;
 		const { l, s } = this._getTextureColor(baseL, baseSat);
@@ -454,7 +563,7 @@ export class Parallax3DRenderer {
 				this._applyNeonEffect(textMesh, fontSize, finalOpacity, l, s);
 				break;
 			default:
-				textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
+				textMesh.color = new Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 				textMesh.fillOpacity = finalOpacity;
 		}
 
@@ -462,8 +571,8 @@ export class Parallax3DRenderer {
 		return textMesh;
 	}
 
-	_createRainbowTroikaText(text: string, fontSize: number, finalOpacity: number, l: number, s: number): THREE.Group {
-		const group = new THREE.Group();
+	_createRainbowTroikaText(text: string, fontSize: number, finalOpacity: number, l: number, s: number): Group {
+		const group = new Group();
 		group.userData.isTroikaGroup = true;
 		group.userData.textMeshes = [];
 
@@ -496,7 +605,7 @@ export class Parallax3DRenderer {
 					this._applyNeonEffectWithHue(textMesh, fontSize, finalOpacity, l, hue);
 					break;
 				default:
-					textMesh.color = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+					textMesh.color = new Color(`hsl(${hue}, 70%, ${l}%)`);
 					textMesh.fillOpacity = finalOpacity;
 			}
 
@@ -521,26 +630,26 @@ export class Parallax3DRenderer {
 		textMesh.fillOpacity = finalOpacity;
 
 		const hue = Math.random() * 360;
-		textMesh.color = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+		textMesh.color = new Color(`hsl(${hue}, 70%, ${l}%)`);
 
 		switch (this.effect) {
 			case 'outline': {
 				const outlineL = this.isDark ? 30 : 70;
 				textMesh.outlineWidth = fontSize * 0.06;
-				textMesh.outlineColor = new THREE.Color(`hsl(${hue}, 60%, ${outlineL}%)`);
+				textMesh.outlineColor = new Color(`hsl(${hue}, 60%, ${outlineL}%)`);
 				textMesh.outlineOpacity = finalOpacity * 0.8;
 				break;
 			}
 			case 'neon': {
 				const glowL = this.isDark ? 60 : 50;
 				const coreL = this.isDark ? 90 : 95;
-				textMesh.color = new THREE.Color(`hsl(${hue}, 80%, ${coreL}%)`);
+				textMesh.color = new Color(`hsl(${hue}, 80%, ${coreL}%)`);
 				textMesh.outlineWidth = fontSize * 0.2;
-				textMesh.outlineColor = new THREE.Color(`hsl(${hue}, 100%, ${glowL}%)`);
+				textMesh.outlineColor = new Color(`hsl(${hue}, 100%, ${glowL}%)`);
 				textMesh.outlineOpacity = finalOpacity * 0.4;
 				textMesh.outlineBlur = fontSize * 0.15;
 				textMesh.strokeWidth = fontSize * 0.04;
-				textMesh.strokeColor = new THREE.Color(`hsl(${hue}, 90%, ${glowL + 10}%)`);
+				textMesh.strokeColor = new Color(`hsl(${hue}, 90%, ${glowL + 10}%)`);
 				textMesh.strokeOpacity = finalOpacity * 0.8;
 				break;
 			}
@@ -552,28 +661,28 @@ export class Parallax3DRenderer {
 
 	_applyOutlineEffectWithHue(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, hue: number): void {
 		const outlineL = this.isDark ? 30 : 70;
-		textMesh.color = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+		textMesh.color = new Color(`hsl(${hue}, 70%, ${l}%)`);
 		textMesh.fillOpacity = opacity;
 		textMesh.outlineWidth = fontSize * 0.06;
-		textMesh.outlineColor = new THREE.Color(`hsl(${hue}, 60%, ${outlineL}%)`);
+		textMesh.outlineColor = new Color(`hsl(${hue}, 60%, ${outlineL}%)`);
 		textMesh.outlineOpacity = opacity * 0.8;
 	}
 
 	_applyNeonEffectWithHue(textMesh: Text, fontSize: number, opacity: number, l: number, hue: number): void {
 		const glowL = this.isDark ? 60 : 50;
 		const coreL = this.isDark ? 90 : 95;
-		textMesh.color = new THREE.Color(`hsl(${hue}, 80%, ${coreL}%)`);
+		textMesh.color = new Color(`hsl(${hue}, 80%, ${coreL}%)`);
 		textMesh.fillOpacity = opacity * 1.2;
 		textMesh.outlineWidth = fontSize * 0.2;
-		textMesh.outlineColor = new THREE.Color(`hsl(${hue}, 100%, ${glowL}%)`);
+		textMesh.outlineColor = new Color(`hsl(${hue}, 100%, ${glowL}%)`);
 		textMesh.outlineOpacity = opacity * 0.4;
 		textMesh.outlineBlur = fontSize * 0.15;
 		textMesh.strokeWidth = fontSize * 0.04;
-		textMesh.strokeColor = new THREE.Color(`hsl(${hue}, 90%, ${glowL + 10}%)`);
+		textMesh.strokeColor = new Color(`hsl(${hue}, 90%, ${glowL + 10}%)`);
 		textMesh.strokeOpacity = opacity * 0.8;
 	}
 
-	_create3DDepthText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Object3D {
+	_create3DDepthText(text: string, fontSize: number, opacity: number, l: number, s: number): Object3D {
 		if (this.effect === 'extrude') {
 			if (this.isRTL && arabicFont) {
 				const mesh = this._createArabicExtrudedText(text, fontSize, opacity, l, s);
@@ -583,7 +692,7 @@ export class Parallax3DRenderer {
 			}
 		}
 
-		const group = new THREE.Group();
+		const group = new Group();
 		group.userData.isTroikaGroup = true;
 		group.userData.textMeshes = [];
 
@@ -624,7 +733,7 @@ export class Parallax3DRenderer {
 		return group;
 	}
 
-	_createExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Object3D {
+	_createExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): Object3D {
 		const depth = fontSize * 2 * this._debugOverrides.extrudeMultiplier;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
@@ -647,19 +756,19 @@ export class Parallax3DRenderer {
 		geometry.computeBoundingBox();
 		geometry.center();
 
-		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
+		const frontColor = new Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
 		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
-		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
+		const sideColor = new Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
 
 		const materials = [
-			new THREE.MeshStandardMaterial({
+			new MeshStandardMaterial({
 				color: frontColor,
 				transparent: isTransparent,
 				opacity: finalOpacity,
 				metalness: this.texture === 'metallic' ? 0.8 : 0.1,
 				roughness: this.texture === 'metallic' ? 0.2 : 0.7
 			}),
-			new THREE.MeshStandardMaterial({
+			new MeshStandardMaterial({
 				color: sideColor,
 				transparent: isTransparent,
 				opacity: finalOpacity,
@@ -668,7 +777,7 @@ export class Parallax3DRenderer {
 			})
 		];
 
-		const mesh = new THREE.Mesh(geometry, materials);
+		const mesh = new Mesh(geometry, materials);
 		mesh.userData.isExtrudedText = true;
 		mesh.userData.geometry = geometry;
 		mesh.userData.materials = materials;
@@ -676,7 +785,7 @@ export class Parallax3DRenderer {
 		return mesh;
 	}
 
-	_createArabicExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Mesh | null {
+	_createArabicExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): Mesh | null {
 		const depth = fontSize * 2 * this._debugOverrides.extrudeMultiplier;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
@@ -693,28 +802,28 @@ export class Parallax3DRenderer {
 			return null;
 		}
 
-		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
+		const frontColor = new Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
 		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
-		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
+		const sideColor = new Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
 
 		let finalFrontColor = frontColor;
 		let finalSideColor = sideColor;
 		if (this.rainbow) {
 			const hue = Math.random() * 360;
-			finalFrontColor = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+			finalFrontColor = new Color(`hsl(${hue}, 70%, ${l}%)`);
 			const rainbowSideL = this.isDark ? Math.max(15, l - 20) : Math.min(90, l + 20);
-			finalSideColor = new THREE.Color(`hsl(${hue}, 60%, ${rainbowSideL}%)`);
+			finalSideColor = new Color(`hsl(${hue}, 60%, ${rainbowSideL}%)`);
 		}
 
 		const materials = [
-			new THREE.MeshStandardMaterial({
+			new MeshStandardMaterial({
 				color: finalFrontColor,
 				transparent: isTransparent,
 				opacity: finalOpacity,
 				metalness: this.texture === 'metallic' ? 0.8 : 0.1,
 				roughness: this.texture === 'metallic' ? 0.2 : 0.7
 			}),
-			new THREE.MeshStandardMaterial({
+			new MeshStandardMaterial({
 				color: finalSideColor,
 				transparent: isTransparent,
 				opacity: finalOpacity,
@@ -723,7 +832,7 @@ export class Parallax3DRenderer {
 			})
 		];
 
-		const mesh = new THREE.Mesh(geometry, materials);
+		const mesh = new Mesh(geometry, materials);
 		mesh.userData.isExtrudedText = true;
 		mesh.userData.geometry = geometry;
 		mesh.userData.materials = materials;
@@ -731,8 +840,8 @@ export class Parallax3DRenderer {
 		return mesh;
 	}
 
-	_createRainbowExtrudedText(text: string, fontSize: number, depth: number, finalOpacity: number, isTransparent: boolean, l: number, s: number): THREE.Group {
-		const group = new THREE.Group();
+	_createRainbowExtrudedText(text: string, fontSize: number, depth: number, finalOpacity: number, isTransparent: boolean, l: number, s: number): Group {
+		const group = new Group();
 		group.userData.isExtrudedText = true;
 		group.userData.geometries = [];
 		group.userData.materials = [];
@@ -761,19 +870,19 @@ export class Parallax3DRenderer {
 			const charWidth = charGeometry.boundingBox!.max.x - charGeometry.boundingBox!.min.x;
 
 			const hue = (i * 360 / Math.max(chars.length, 1)) % 360;
-			const frontColor = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
+			const frontColor = new Color(`hsl(${hue}, 70%, ${l}%)`);
 			const sideL = this.isDark ? Math.max(15, l - 20) : Math.min(90, l + 20);
-			const sideColor = new THREE.Color(`hsl(${hue}, 60%, ${sideL}%)`);
+			const sideColor = new Color(`hsl(${hue}, 60%, ${sideL}%)`);
 
 			const materials = [
-				new THREE.MeshStandardMaterial({
+				new MeshStandardMaterial({
 					color: frontColor,
 					transparent: isTransparent,
 					opacity: finalOpacity,
 					metalness: this.texture === 'metallic' ? 0.8 : 0.1,
 					roughness: this.texture === 'metallic' ? 0.2 : 0.6
 				}),
-				new THREE.MeshStandardMaterial({
+				new MeshStandardMaterial({
 					color: sideColor,
 					transparent: isTransparent,
 					opacity: finalOpacity,
@@ -782,7 +891,7 @@ export class Parallax3DRenderer {
 				})
 			];
 
-			const charMesh = new THREE.Mesh(charGeometry, materials);
+			const charMesh = new Mesh(charGeometry, materials);
 			charMesh.position.x = xOffset;
 
 			group.add(charMesh);
@@ -807,23 +916,23 @@ export class Parallax3DRenderer {
 		const layerSat = isFront ? s + 10 : Math.max(5, s - progress * 15);
 		const layerOpacity = isFront ? opacity : opacity * (1.0 - progress * 0.4);
 
-		textMesh.color = new THREE.Color(`hsl(${this.hue}, ${Math.max(5, layerSat)}%, ${layerL}%)`);
+		textMesh.color = new Color(`hsl(${this.hue}, ${Math.max(5, layerSat)}%, ${layerL}%)`);
 		textMesh.fillOpacity = layerOpacity;
 
 		if (isFront) {
 			textMesh.strokeWidth = fontSize * 0.02;
-			textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${this.isDark ? 95 : 10}%)`);
+			textMesh.strokeColor = new Color(`hsl(${this.hue}, ${s}%, ${this.isDark ? 95 : 10}%)`);
 			textMesh.strokeOpacity = opacity * 0.5;
 		}
 	}
 
 	_styleShadowLayer(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, progress: number, isFront: boolean): void {
 		if (isFront) {
-			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
+			textMesh.color = new Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 			textMesh.fillOpacity = opacity;
 		} else {
 			const shadowL = this.isDark ? 8 : 15;
-			textMesh.color = new THREE.Color(`hsl(${this.hue}, 5%, ${shadowL}%)`);
+			textMesh.color = new Color(`hsl(${this.hue}, 5%, ${shadowL}%)`);
 			textMesh.fillOpacity = opacity * (0.7 - progress * 0.5);
 			textMesh.position.x = progress * fontSize * 0.3;
 			textMesh.position.y = -progress * fontSize * 0.3;
@@ -832,42 +941,47 @@ export class Parallax3DRenderer {
 
 	_styleEmbossLayer(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, progress: number, isFront: boolean): void {
 		if (isFront) {
-			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
+			textMesh.color = new Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 			textMesh.fillOpacity = opacity;
 			textMesh.strokeWidth = fontSize * 0.025;
-			textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, ${s - 10}%, ${this.isDark ? 90 : 98}%)`);
+			textMesh.strokeColor = new Color(`hsl(${this.hue}, ${s - 10}%, ${this.isDark ? 90 : 98}%)`);
 			textMesh.strokeOpacity = opacity * 0.6;
 		} else {
 			const backL = this.isDark ? Math.max(5, l - 30 - progress * 25) : Math.min(90, l + 20 + progress * 15);
-			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${Math.max(5, s - 10)}%, ${backL}%)`);
+			textMesh.color = new Color(`hsl(${this.hue}, ${Math.max(5, s - 10)}%, ${backL}%)`);
 			textMesh.fillOpacity = opacity * (0.9 - progress * 0.5);
 		}
 	}
 
 	_applyOutlineEffect(textMesh: Text, fontSize: number, opacity: number, l: number, s: number): void {
 		const outlineL = this.isDark ? 30 : 70;
-		textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
+		textMesh.color = new Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 		textMesh.fillOpacity = opacity;
 		textMesh.outlineWidth = fontSize * 0.06;
-		textMesh.outlineColor = new THREE.Color(`hsl(${this.hue}, ${s - 5}%, ${outlineL}%)`);
+		textMesh.outlineColor = new Color(`hsl(${this.hue}, ${s - 5}%, ${outlineL}%)`);
 		textMesh.outlineOpacity = opacity * 0.8;
 	}
 
 	_applyNeonEffect(textMesh: Text, fontSize: number, opacity: number, l: number, s: number): void {
 		const glowL = this.isDark ? 60 : 50;
 		const coreL = this.isDark ? 90 : 95;
-		textMesh.color = new THREE.Color(`hsl(${this.hue}, 80%, ${coreL}%)`);
+		textMesh.color = new Color(`hsl(${this.hue}, 80%, ${coreL}%)`);
 		textMesh.fillOpacity = opacity * 1.2;
 		textMesh.outlineWidth = fontSize * 0.2;
-		textMesh.outlineColor = new THREE.Color(`hsl(${this.hue}, 100%, ${glowL}%)`);
+		textMesh.outlineColor = new Color(`hsl(${this.hue}, 100%, ${glowL}%)`);
 		textMesh.outlineOpacity = opacity * 0.4;
 		textMesh.outlineBlur = fontSize * 0.15;
 		textMesh.strokeWidth = fontSize * 0.04;
-		textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, 90%, ${glowL + 10}%)`);
+		textMesh.strokeColor = new Color(`hsl(${this.hue}, 90%, ${glowL + 10}%)`);
 		textMesh.strokeOpacity = opacity * 0.8;
 	}
 
 	async spawnLane(text: string, direction: 'ltr' | 'rtl', initialProgress = 0): Promise<number> {
+		const savedEffect = this.effect;
+		const savedTexture = this.texture;
+		if (this.effect === 'random') this.effect = CONCRETE_EFFECTS[Math.floor(Math.random() * CONCRETE_EFFECTS.length)];
+		if (this.texture === 'random') this.texture = CONCRETE_TEXTURES[Math.floor(Math.random() * CONCRETE_TEXTURES.length)];
+
 		if (this.effect === 'extrude' && !this.font && fontLoadPromise) {
 			try {
 				this.font = await fontLoadPromise;
@@ -890,10 +1004,10 @@ export class Parallax3DRenderer {
 
 		const fontSize = 20 + Math.pow(sizeRand, 2) * 80 * intensity;
 		const opacityMultiplier = this.isDark ? 1 : 2.5;
-		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier * this._debugOverrides.opacityMultiplier;
+		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier;
 
-		let mesh: THREE.Object3D;
-		let texture: THREE.CanvasTexture | null = null;
+		let mesh: Object3D;
+		let texture: CanvasTexture | null = null;
 		let estimatedWidth: number;
 
 		if (useTroika) {
@@ -903,44 +1017,66 @@ export class Parallax3DRenderer {
 			const result = this._createTextTexture(text, fontSize);
 			texture = result.texture;
 
-			const geometry = new THREE.PlaneGeometry(result.width, result.height);
-			const material = new THREE.MeshBasicMaterial({
+			const geometry = new PlaneGeometry(result.width, result.height);
+			const material = new MeshStandardMaterial({
 				map: texture,
 				transparent: true,
 				opacity: opacity,
 				depthWrite: false,
-				side: THREE.DoubleSide
+				side: DoubleSide,
+				roughness: 0.9,
+				metalness: 0
 			});
 
-			mesh = new THREE.Mesh(geometry, material);
+			mesh = new Mesh(geometry, material);
 			estimatedWidth = result.width;
 		}
 
-		const z = -100 - depthRand * 600 * intensity * this._debugOverrides.depthMultiplier;
-		const y = (Math.random() - 0.5) * 800;
+		const z = -100 - depthRand * 600 * intensity;
 
-		const cameraZ = this.camera.position.z;
-		const distanceFromCamera = cameraZ - z;
-		const referenceDistance = cameraZ + 100;
+		const distanceFromCamera = this._orbitRadius - z;
+		const referenceDistance = this._orbitRadius + 100;
 		const perspectiveScale = distanceFromCamera / referenceDistance;
 
 		const viewportSize = Math.max(window.innerWidth, window.innerHeight);
-		const baseSpawnOffset = viewportSize * 1.3 + estimatedWidth;
-		const baseDeleteOffset = viewportSize * 1.3 + estimatedWidth;
 
-		const spawnOffset = baseSpawnOffset * perspectiveScale;
-		const deleteOffset = baseDeleteOffset * perspectiveScale;
+		let startX: number, endX: number, startY: number, endY: number;
 
-		const startX = direction === 'rtl' ? -spawnOffset : spawnOffset;
-		const endX = direction === 'rtl' ? deleteOffset : -deleteOffset;
+		if (this.fallingText) {
+			// Top-to-bottom: Y moves, X is random and fixed
+			const halfW = window.innerWidth * 0.5 * perspectiveScale;
+			const x = (Math.random() - 0.5) * halfW * 2;
+			startX = x;
+			endX = x;
 
-		const totalDistance = Math.abs(endX - startX);
+			const baseSpawnY = viewportSize * 0.8 + fontSize * 1.4;
+			const spawnY = baseSpawnY * perspectiveScale;
+			startY = spawnY;
+			endY = -spawnY;
+		} else {
+			// Horizontal: X moves, Y is random and fixed
+			const y = (Math.random() - 0.5) * 800;
+			startY = y;
+			endY = y;
+
+			const baseSpawnOffset = viewportSize * 1.3 + estimatedWidth;
+			const baseDeleteOffset = viewportSize * 1.3 + estimatedWidth;
+			const spawnOffset = baseSpawnOffset * perspectiveScale;
+			const deleteOffset = baseDeleteOffset * perspectiveScale;
+			startX = direction === 'rtl' ? -spawnOffset : spawnOffset;
+			endX = direction === 'rtl' ? deleteOffset : -deleteOffset;
+		}
+
+		const totalDistanceX = Math.abs(endX - startX);
+		const totalDistanceY = Math.abs(endY - startY);
+		const totalDistance = Math.max(totalDistanceX, totalDistanceY);
 		const baseSpeed = (250 + Math.pow(speedRand, 2) * 400) * intensity * this._debugOverrides.speedMultiplier;
 		const sizeFactor = 1 / (1 + fontSize / 150);
 		const duration = totalDistance / (baseSpeed * sizeFactor);
 
 		const initialX = startX + (endX - startX) * initialProgress;
-		mesh.position.set(initialX, y, z);
+		const initialY = startY + (endY - startY) * initialProgress;
+		mesh.position.set(initialX, initialY, z);
 
 		const now = performance.now();
 		const adjustedStartTime = now - (initialProgress * duration * 1000);
@@ -950,13 +1086,25 @@ export class Parallax3DRenderer {
 			mesh,
 			startX,
 			endX,
+			startY,
+			endY,
 			startTime: adjustedStartTime,
 			duration: duration * 1000,
 			texture,
-			isTroika: useTroika
+			isTroika: useTroika,
+			width: estimatedWidth,
+			height: fontSize * 1.4
 		});
 
 		this.scene.add(mesh);
+
+		if (this._debugLightGroup) {
+			mesh.castShadow = true;
+			mesh.traverse(child => { child.castShadow = true; });
+		}
+
+		this.effect = savedEffect;
+		this.texture = savedTexture;
 		return id;
 	}
 
@@ -972,14 +1120,14 @@ export class Parallax3DRenderer {
 		}
 	}
 
-	_disposeMesh(mesh: THREE.Object3D): void {
+	_disposeMesh(mesh: Object3D): void {
 		if (mesh.children?.length) {
 			for (const child of [...mesh.children]) {
 				this._disposeMesh(child);
 			}
 		}
 
-		const m = mesh as THREE.Mesh;
+		const m = mesh as Mesh;
 		if (m.geometry) {
 			m.geometry.dispose();
 		}
@@ -1027,6 +1175,316 @@ export class Parallax3DRenderer {
 		return this.lanes.size;
 	}
 
+	setGameMode(enabled: boolean): void {
+		if (enabled && !this.gameMode) {
+			this._gameKeysHeld.clear();
+			window.addEventListener('keydown', this._boundGameKeyDown, { capture: true });
+			window.addEventListener('keyup', this._boundGameKeyUp, { capture: true });
+		} else if (!enabled && this.gameMode) {
+			window.removeEventListener('keydown', this._boundGameKeyDown, { capture: true });
+			window.removeEventListener('keyup', this._boundGameKeyUp, { capture: true });
+			this._gameKeysHeld.clear();
+			this._orbitTarget.set(0, 0, 0);
+			this._gameSpeed = 400;
+		}
+		this.gameMode = enabled;
+	}
+
+	setFlyMode(enabled: boolean): void {
+		if (enabled && !this.flyMode) {
+			this._fly = {
+				yaw: 0,
+				pitch: 0,
+				roll: 0,
+				keysHeld: new Set(),
+				speed: 400,
+				lookVelocityX: 0,
+				lookVelocityY: 0,
+				savedOrbit: {
+					orbitRadius: this._orbitRadius,
+					rotationX: this.rotationX,
+					rotationY: this.rotationY,
+					velocityX: this.velocityX,
+					velocityY: this.velocityY
+				}
+			};
+			this.camera.rotation.order = 'YXZ';
+			this.isDragging = false;
+			document.body.style.userSelect = '';
+			window.addEventListener('keydown', this._boundFlyKeyDown, { capture: true });
+			window.addEventListener('keyup', this._boundFlyKeyUp, { capture: true });
+			window.addEventListener('blur', this._boundFlyBlur);
+			this.flyMode = true;
+		} else if (!enabled && this.flyMode && this._fly) {
+			window.removeEventListener('keydown', this._boundFlyKeyDown, { capture: true });
+			window.removeEventListener('keyup', this._boundFlyKeyUp, { capture: true });
+			window.removeEventListener('blur', this._boundFlyBlur);
+			const saved = this._fly.savedOrbit;
+			this._orbitRadius = saved.orbitRadius;
+			this.camera.rotation.set(0, 0, 0);
+			this.camera.rotation.order = 'XYZ';
+			this.rotationX = saved.rotationX;
+			this.rotationY = saved.rotationY;
+			this.velocityX = saved.velocityX;
+			this.velocityY = saved.velocityY;
+			this.isDragging = false;
+			document.body.style.userSelect = '';
+			this._fly = null;
+			this.flyMode = false;
+		}
+	}
+
+	setInvaderHitEffect(effect: HitEffectType): void {
+		if (this._game) {
+			this._game.hitEffect = effect;
+		}
+	}
+
+	setFallingText(enabled: boolean): void {
+		this.fallingText = enabled;
+	}
+
+	setLights(enabled: boolean, intensity: number): void {
+		if (enabled && !this._debugLightGroup) {
+			this.renderer.shadowMap.enabled = true;
+			this.renderer.shadowMap.type = PCFSoftShadowMap;
+			this._ambientLight.intensity = 0.15;
+
+			this._debugLightGroup = new Group();
+
+			const spot = new SpotLight(0xffffff, intensity * 20);
+			spot.position.set(600, 900, 800);
+			spot.angle = Math.PI / 4;
+			spot.penumbra = 0.3;
+			spot.decay = 0.2;
+			spot.castShadow = true;
+			spot.shadow.mapSize.width = 2048;
+			spot.shadow.mapSize.height = 2048;
+			spot.shadow.camera.near = 100;
+			spot.shadow.camera.far = 4000;
+			spot.target.position.set(0, 0, 0);
+			this._debugSpot = spot;
+
+			this._debugLightGroup.add(spot);
+			this._debugLightGroup.add(spot.target);
+
+			const bulbGeo = new SphereGeometry(12, 8, 8);
+			const bulbMat = new MeshBasicMaterial({ color: 0xffffcc });
+			const bulb = new Mesh(bulbGeo, bulbMat);
+			bulb.position.copy(spot.position);
+			this._debugLightGroup.add(bulb);
+
+			const groundGeo = new PlaneGeometry(500000, 500000);
+			const groundMat = new MeshStandardMaterial({
+				color: 0x888888,
+				transparent: true,
+				opacity: 0.12,
+				roughness: 0.9
+			});
+			const ground = new Mesh(groundGeo, groundMat);
+			ground.rotation.x = -Math.PI / 2;
+			ground.position.y = -500;
+			ground.receiveShadow = true;
+			this._debugLightGroup.add(ground);
+
+			this.scene.add(this._debugLightGroup);
+			this._setLaneShadows(true);
+
+		} else if (!enabled && this._debugLightGroup) {
+			this.scene.remove(this._debugLightGroup);
+			this._disposeMesh(this._debugLightGroup);
+			this._debugLightGroup = null;
+			this._debugSpot = null;
+			this._ambientLight.intensity = 0.6;
+			this.renderer.shadowMap.enabled = false;
+			this._setLaneShadows(false);
+
+		} else if (enabled && this._debugSpot) {
+			this._debugSpot.intensity = intensity * 20;
+		}
+	}
+
+	private _setLaneShadows(cast: boolean): void {
+		for (const lane of this.lanes.values()) {
+			lane.mesh.castShadow = cast;
+			lane.mesh.traverse(child => { child.castShadow = cast; });
+		}
+	}
+
+	setNoFog(enabled: boolean): void {
+		this.noFog = enabled;
+		this._updateFog();
+	}
+
+	resetInvaderGame(): void {
+		if (this._game) {
+			this._game.reset();
+			this.clearAllLanes();
+		}
+	}
+
+	setInvaderMode(enabled: boolean): void {
+		if (enabled && !this.invaderMode) {
+			if (this.flyMode) this.setFlyMode(false);
+			this._game = new ScriptInvaderGame(this.scene, this.camera, this.isDark);
+			this._game.setRemoveLane(this.removeLane.bind(this));
+			this._game.setOnExit(() => {
+				if (this.onInvaderExit) this.onInvaderExit();
+			});
+			this.invaderMode = true;
+		} else if (!enabled && this.invaderMode) {
+			if (this._game) {
+				this._game.dispose();
+				this._game = null;
+			}
+			this.invaderMode = false;
+		}
+	}
+
+	_onFlyKeyDown(e: KeyboardEvent): void {
+		if (!this._fly || !FLY_KEYS.has(e.code)) return;
+		e.preventDefault();
+		e.stopPropagation();
+		if (e.code === 'KeyR') {
+			this._resetFlyView();
+			return;
+		}
+		if (e.code === 'Space') {
+			this.setPaused(!this.paused);
+			if (this.onPauseToggle) this.onPauseToggle(this.paused);
+			return;
+		}
+		this._fly.keysHeld.add(e.code);
+	}
+
+	_onFlyKeyUp(e: KeyboardEvent): void {
+		if (!this._fly || !FLY_KEYS.has(e.code)) return;
+		e.preventDefault();
+		e.stopPropagation();
+		this._fly.keysHeld.delete(e.code);
+	}
+
+	_onGameKeyDown(e: KeyboardEvent): void {
+		if (!GAME_KEYS.has(e.code)) return;
+		// When invader mode is active, let its handler own Space
+		if (e.code === 'Space' && this.invaderMode) return;
+		e.preventDefault();
+		e.stopPropagation();
+		if (e.code === 'KeyR') {
+			this._orbitTarget.set(0, 0, 0);
+			return;
+		}
+		if (e.code === 'Space') {
+			this.setPaused(!this.paused);
+			if (this.onPauseToggle) this.onPauseToggle(this.paused);
+			return;
+		}
+		this._gameKeysHeld.add(e.code);
+	}
+
+	_onGameKeyUp(e: KeyboardEvent): void {
+		if (!GAME_KEYS.has(e.code)) return;
+		if (e.code === 'Space' && this.invaderMode) return;
+		e.preventDefault();
+		e.stopPropagation();
+		this._gameKeysHeld.delete(e.code);
+	}
+
+	_updateFlyMovement(dt: number): void {
+		const fly = this._fly!;
+		const move = new Vector3(0, 0, 0);
+
+		if (fly.keysHeld.has('KeyW')) move.z -= 1;
+		if (fly.keysHeld.has('KeyS')) move.z += 1;
+		if (fly.keysHeld.has('KeyA')) move.x -= 1;
+		if (fly.keysHeld.has('KeyD')) move.x += 1;
+		if (fly.keysHeld.has('ShiftLeft') || fly.keysHeld.has('ShiftRight')) move.y -= 1;
+
+		if (move.lengthSq() > 0) {
+			move.normalize();
+			move.multiplyScalar(fly.speed * dt);
+			move.applyQuaternion(this.camera.quaternion);
+			this.camera.position.add(move);
+		}
+
+		if (fly.keysHeld.has('KeyQ')) fly.roll -= 1.5 * dt;
+		if (fly.keysHeld.has('KeyE')) fly.roll += 1.5 * dt;
+	}
+
+	_updateFlyLook(dt: number): void {
+		const fly = this._fly!;
+		const friction = 0.92;
+
+		fly.yaw += fly.lookVelocityY * dt * 1000;
+		fly.pitch += fly.lookVelocityX * dt * 1000;
+
+		fly.lookVelocityX *= friction;
+		fly.lookVelocityY *= friction;
+		if (Math.abs(fly.lookVelocityX) < 0.00001) fly.lookVelocityX = 0;
+		if (Math.abs(fly.lookVelocityY) < 0.00001) fly.lookVelocityY = 0;
+
+		fly.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, fly.pitch));
+		this.camera.rotation.set(fly.pitch, fly.yaw, fly.roll, 'YXZ');
+	}
+
+	_panCamera(deltaX: number, deltaY: number): void {
+		const panScale = this._fly ? this._fly.speed * 0.001 : Math.max(0.5, Math.abs(this.camera.position.z) * 0.0005);
+		const right = new Vector3();
+		const up = new Vector3();
+		this.camera.updateMatrixWorld();
+		right.setFromMatrixColumn(this.camera.matrixWorld, 0);
+		up.setFromMatrixColumn(this.camera.matrixWorld, 1);
+		this.camera.position.addScaledVector(right, -deltaX * panScale);
+		this.camera.position.addScaledVector(up, deltaY * panScale);
+	}
+
+	_panOrbitTarget(deltaX: number, deltaY: number): void {
+		const panScale = this._orbitRadius * 0.003;
+		const right = new Vector3();
+		const up = new Vector3();
+		this.camera.updateMatrixWorld();
+		right.setFromMatrixColumn(this.camera.matrixWorld, 0);
+		up.setFromMatrixColumn(this.camera.matrixWorld, 1);
+		this._orbitTarget.addScaledVector(right, -deltaX * panScale);
+		this._orbitTarget.addScaledVector(up, deltaY * panScale);
+	}
+
+	_resetFlyView(): void {
+		if (!this._fly) return;
+		const saved = this._fly.savedOrbit;
+		this.camera.position.set(0, 0, saved.orbitRadius);
+		this._fly.yaw = 0;
+		this._fly.pitch = 0;
+		this._fly.roll = 0;
+		this._fly.lookVelocityX = 0;
+		this._fly.lookVelocityY = 0;
+		this._fly.speed = 400;
+		this.camera.rotation.set(0, 0, 0, 'YXZ');
+	}
+
+	showAxes(visible: boolean): void {
+		if (visible && !this._axesGroup) {
+			this._axesGroup = new Group();
+
+			const axes = new AxesHelper(1500);
+			this._axesGroup.add(axes);
+
+			const grid = new GridHelper(6000, 30, 0x666666, 0x333333);
+			const mats = Array.isArray(grid.material) ? grid.material : [grid.material];
+			for (const m of mats) {
+				(m as LineBasicMaterial).opacity = 0.35;
+				(m as LineBasicMaterial).transparent = true;
+			}
+			this._axesGroup.add(grid);
+
+			this.scene.add(this._axesGroup);
+		} else if (!visible && this._axesGroup) {
+			this.scene.remove(this._axesGroup);
+			this._disposeMesh(this._axesGroup);
+			this._axesGroup = null;
+		}
+	}
+
 	setPaused(paused: boolean): void {
 		if (paused && !this.paused) {
 			this._pauseStartTime = performance.now();
@@ -1041,13 +1499,7 @@ export class Parallax3DRenderer {
 
 	setDebugOverrides(overrides: Partial<DebugOverrides>): void {
 		if (overrides.speedMultiplier !== undefined) this._debugOverrides.speedMultiplier = overrides.speedMultiplier;
-		if (overrides.opacityMultiplier !== undefined) this._debugOverrides.opacityMultiplier = overrides.opacityMultiplier;
-		if (overrides.depthMultiplier !== undefined) this._debugOverrides.depthMultiplier = overrides.depthMultiplier;
 		if (overrides.extrudeMultiplier !== undefined) this._debugOverrides.extrudeMultiplier = overrides.extrudeMultiplier;
-		if (overrides.fieldMultiplier !== undefined) {
-			this._debugOverrides.fieldMultiplier = overrides.fieldMultiplier;
-			this._updateFog();
-		}
 	}
 
 	getDebugStats(): DebugStats {
@@ -1061,11 +1513,27 @@ export class Parallax3DRenderer {
 		} catch {
 			// Extension not available
 		}
-		return {
+		const stats: DebugStats = {
 			fps: this.fps,
 			laneCount: this.lanes.size,
 			rendererInfo
 		};
+		if (this.flyMode && this._fly) {
+			stats.flySpeed = Math.round(this._fly.speed);
+			const p = this.camera.position;
+			stats.cameraPos = `${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}`;
+		} else if (this.gameMode) {
+			stats.flySpeed = Math.round(this._gameSpeed);
+			const p = this.camera.position;
+			stats.cameraPos = `${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}`;
+		}
+		if (this.invaderMode && this._game) {
+			stats.invaderScore = this._game.score;
+			stats.invaderLives = this._game.lives;
+			stats.invaderHighScore = this._game.highScore;
+			stats.invaderGameOver = this._game.gameOver;
+		}
+		return stats;
 	}
 
 	_animate(): void {
@@ -1076,6 +1544,8 @@ export class Parallax3DRenderer {
 		if (this.contextLost) return;
 
 		const now = performance.now();
+		const flyDt = Math.min((now - this._lastFrameTime) / 1000, 0.1);
+		this._lastFrameTime = now;
 
 		this._fpsFrameCount++;
 		if (now - this._fpsLastTime >= 1000) {
@@ -1084,26 +1554,60 @@ export class Parallax3DRenderer {
 			this._fpsLastTime = now;
 		}
 
-		if (!this.isDragging) {
-			const dt = 16;
-			const friction = 0.92;
+		if (this.flyMode && this._fly) {
+			this._updateFlyMovement(flyDt);
+			if (!this.isDragging) {
+				this._updateFlyLook(flyDt);
+			}
+		} else {
+			if (!this.isDragging) {
+				const dt = 16;
+				const friction = 0.92;
 
-			this.rotationX += this.velocityX * dt;
-			this.rotationY += this.velocityY * dt;
+				this.rotationX += this.velocityX * dt;
+				this.rotationY += this.velocityY * dt;
 
-			this.velocityX *= friction;
-			this.velocityY *= friction;
+				this.velocityX *= friction;
+				this.velocityY *= friction;
 
-			if (Math.abs(this.velocityX) < 0.00001) this.velocityX = 0;
-			if (Math.abs(this.velocityY) < 0.00001) this.velocityY = 0;
+				if (Math.abs(this.velocityX) < 0.00001) this.velocityX = 0;
+				if (Math.abs(this.velocityY) < 0.00001) this.velocityY = 0;
+			}
 
-			const maxRotation = 0.8;
-			this.rotationX = Math.max(-maxRotation, Math.min(maxRotation, this.rotationX));
-			this.rotationY = Math.max(-maxRotation, Math.min(maxRotation, this.rotationY));
+			// WASD movement in game mode: shift the orbit target
+			if (this.gameMode && this._gameKeysHeld.size > 0) {
+				const move = new Vector3(0, 0, 0);
+				const speed = this._gameSpeed * flyDt;
+				if (this._gameKeysHeld.has('KeyW')) move.z -= 1;
+				if (this._gameKeysHeld.has('KeyS')) move.z += 1;
+				if (this._gameKeysHeld.has('KeyA')) move.x -= 1;
+				if (this._gameKeysHeld.has('KeyD')) move.x += 1;
+				if (this._gameKeysHeld.has('ShiftLeft') || this._gameKeysHeld.has('ShiftRight')) move.y -= 1;
+				if (move.lengthSq() > 0) {
+					move.normalize().multiplyScalar(speed);
+					move.applyQuaternion(this.camera.quaternion);
+					this._orbitTarget.add(move);
+				}
+			}
+
+			// Orbit camera: position camera on a sphere around the target
+			const phi = Math.PI / 2 - this.rotationX;
+			const theta = this.rotationY;
+			this.camera.position.x = this._orbitTarget.x + this._orbitRadius * Math.sin(phi) * Math.sin(theta);
+			this.camera.position.y = this._orbitTarget.y + this._orbitRadius * Math.cos(phi);
+			this.camera.position.z = this._orbitTarget.z + this._orbitRadius * Math.sin(phi) * Math.cos(theta);
+			this.camera.lookAt(this._orbitTarget);
 		}
 
-		this.scene.rotation.x = this.rotationX;
-		this.scene.rotation.y = this.rotationY;
+		if (this.invaderMode && this._game && !this.paused) {
+			this._game.update(flyDt, this.lanes);
+			if (this.onScoreChange) {
+				this.onScoreChange(this._game.score);
+			}
+			if (this.onInvaderStatsChange) {
+				this.onInvaderStatsChange(this._game.getStats());
+			}
+		}
 
 		if (!this.paused) {
 			const toRemove: number[] = [];
@@ -1116,6 +1620,7 @@ export class Parallax3DRenderer {
 					toRemove.push(id);
 				} else {
 					lane.mesh.position.x = lane.startX + (lane.endX - lane.startX) * progress;
+					lane.mesh.position.y = lane.startY + (lane.endY - lane.startY) * progress;
 				}
 			}
 
@@ -1142,12 +1647,33 @@ export class Parallax3DRenderer {
 			this.animationId = null;
 		}
 
+		if (this.flyMode) {
+			window.removeEventListener('keydown', this._boundFlyKeyDown, { capture: true });
+			window.removeEventListener('keyup', this._boundFlyKeyUp, { capture: true });
+			window.removeEventListener('blur', this._boundFlyBlur);
+		}
+
+		if (this.gameMode) {
+			window.removeEventListener('keydown', this._boundGameKeyDown, { capture: true });
+			window.removeEventListener('keyup', this._boundGameKeyUp, { capture: true });
+		}
+
+		if (this.invaderMode && this._game) {
+			this._game.dispose();
+			this._game = null;
+			this.invaderMode = false;
+		}
+
 		window.removeEventListener('resize', this._boundResize);
 		window.removeEventListener('mousedown', this._boundMouseDown);
 		window.removeEventListener('mouseup', this._boundMouseUp);
 		window.removeEventListener('mousemove', this._boundMouseMove);
 		window.removeEventListener('wheel', this._boundWheel);
 
+		if (this._debugLightGroup) {
+			this.setLights(false, 0);
+		}
+		this.showAxes(false);
 		this.clearAllLanes();
 
 		this.renderer.dispose();

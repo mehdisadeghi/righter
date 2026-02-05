@@ -22,7 +22,8 @@
 	import { publishRace, fetchMyRaces, publishRoomPresence, fetchActiveRooms, fetchRoomParticipants, DEFAULT_RELAYS } from '$lib/nostr.js';
 	import { fetchFastRelays } from '$lib/relay-discovery.js';
 	import { mergeRaceLists, findMissingRaces } from '$lib/crdt.js';
-	import { isWebGLAvailable, Parallax3DRenderer, type DebugStats } from '$lib/parallax3d.js';
+	import { isWebGLAvailable, type DebugStats } from '$lib/webgl.js';
+	import type { HitEffectType } from '$lib/game.js';
 
 	const MODES = {
 		time: [15, 30, 60, 120],
@@ -109,17 +110,25 @@
 
 	// Debug panel (checkbox persisted, all other debug state is runtime-only)
 	let debugPanel = $derived(data.settings.debugPanel === true);
-	let debugGameMode = $state(false);
+	let debugHideUI = $state(false);
+	let debugGame = $state(false);
+	let debugNoFog = $state(false);
 	let debugPaused = $state(false);
 	let debugSpeedMult = $state(1.0);
-	let debugOpacityMult = $state(1.0);
-	let debugDepthMult = $state(1.0);
 	let debugExtrudeMult = $state(0.1);
-	let debugFieldMult = $state(1.0);
 	let debugIntensity: number | null = $state(null);
 	let debugEffect: string | null = $state(null);
-	let debugTexture: string | null = $state(null);
+	let debugTexture: string | null = $state('solid');
 	let debugRainbow: boolean | null = $state(null);
+	let debugAxes = $state(true);
+	let debugLights = $state(true);
+	let debugLightIntensity = $state(1.0);
+	let debugFallingText = $state(false);
+	let invaderScore = $state(0);
+	let invaderLives = $state(5);
+	let invaderHighScore = $state(0);
+	let invaderGameOver = $state(false);
+	let invaderHitEffect: HitEffectType = $state('oblivion');
 	let debugInfo: DebugStats = $state({ fps: 0, laneCount: 0, rendererInfo: '' });
 	let debugPollTimer: ReturnType<typeof setInterval> | null = $state(null);
 
@@ -262,7 +271,7 @@
 	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.5);
 	let parallax3d = $derived(data.settings.parallax3d === true);
 	let showHands = $derived(data.settings.showHands === true);
-	let parallax3dEffect = $derived(data.settings.parallax3dEffect || 'none');
+	let parallax3dEffect = $derived(data.settings.parallax3dEffect && data.settings.parallax3dEffect !== 'none' ? data.settings.parallax3dEffect : 'extrude');
 	let parallax3dTexture = $derived(data.settings.parallax3dTexture || 'solid');
 	let parallax3dRainbow = $derived(data.settings.parallax3dRainbow === true);
 	let dotPattern = $derived(data.settings.dotPattern !== false);
@@ -732,6 +741,9 @@
 			meta: e.metaKey
 		};
 
+		// When UI is hidden, game/invader key handlers in parallax3d handle input
+		if (debugHideUI && ['ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyW', 'KeyS', 'Space', 'Escape', 'KeyR', 'ShiftLeft', 'ShiftRight'].includes(e.code)) return;
+
 		// Don't interfere if user is typing in another input/textarea
 		const activeEl = document.activeElement;
 		const isInOtherInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') && activeEl !== inputElement;
@@ -855,11 +867,9 @@
 		lastSpawnedLineIndex = 0;
 		await tick();
 		// Spawn initial background lanes and start continuous spawner
-		const firstLine = targetText.split('\n')[0];
-		if (firstLine?.trim()) {
-			for (let i = 0; i < 5; i++) {
-				spawnLane(firstLine, textDir);
-			}
+		for (let i = 0; i < 5; i++) {
+			const text = getCurrentLaneText();
+			if (text) spawnLane(text, textDir);
 		}
 		startLaneSpawner();
 		inputElement?.focus({ preventScroll: true });
@@ -1605,8 +1615,9 @@
 	}
 
 	function getCurrentLaneText() {
-		const lineText = lines[currentLineIndex];
-		return lineText?.trim() ? lineText : lines[0] || '';
+		const pool = lines.filter(l => l?.trim());
+		if (pool.length === 0) return '';
+		return pool[Math.floor(Math.random() * pool.length)];
 	}
 
 	function startLaneSpawner() {
@@ -1652,29 +1663,35 @@
 	});
 
 	// Three.js 3D parallax renderer management
+	let parallax3dLoading = false;
 	$effect(() => {
 		const shouldUse3d = parallax && parallax3d && webglAvailable && parallax3dContainer;
 
-		if (shouldUse3d && !parallax3dRenderer) {
-			parallax3dRenderer = new Parallax3DRenderer(parallax3dContainer, {
-				intensity: parallaxIntensity,
-				hue: data.settings.hue,
-				isDark: darkMode,
-				isRTL: textDir === 'rtl',
-				effect: parallax3dEffect,
-				texture: parallax3dTexture,
-				rainbow: parallax3dRainbow
-			});
-			// Initial burst: spawn fewer lanes at earlier progress so they fade in gradually
-			const burstCount = Math.round(LANE_POOL_SIZE * parallaxIntensity * 0.5);
-			for (let i = 0; i < burstCount; i++) {
-				const text = getCurrentLaneText();
-				if (text) {
-					// Spread progress from 0.0 to 0.4 - lines start further back in fog
-					const progress = (i / burstCount) * 0.4;
-					spawnLane(text, textDir, progress);
+		if (shouldUse3d && !parallax3dRenderer && !parallax3dLoading) {
+			parallax3dLoading = true;
+			(async () => {
+				const { Parallax3DRenderer } = await import('$lib/parallax3d.js');
+				if (!parallax3dContainer) { parallax3dLoading = false; return; }
+				parallax3dRenderer = new Parallax3DRenderer(parallax3dContainer, {
+					intensity: parallaxIntensity,
+					hue: data.settings.hue,
+					isDark: darkMode,
+					isRTL: textDir === 'rtl',
+					effect: parallax3dEffect,
+					texture: parallax3dTexture,
+					rainbow: parallax3dRainbow
+				});
+				parallax3dRenderer.onPauseToggle = (paused) => { debugPaused = paused; };
+				const burstCount = Math.round(LANE_POOL_SIZE * parallaxIntensity * 0.5);
+				for (let i = 0; i < burstCount; i++) {
+					const text = getCurrentLaneText();
+					if (text) {
+						const progress = (i / burstCount) * 0.4;
+						spawnLane(text, textDir, progress);
+					}
 				}
-			}
+				parallax3dLoading = false;
+			})();
 		} else if (!shouldUse3d && parallax3dRenderer) {
 			parallax3dRenderer.dispose();
 			parallax3dRenderer = null;
@@ -1689,8 +1706,8 @@
 				hue: data.settings.hue,
 				isDark: darkMode,
 				isRTL: textDir === 'rtl',
-				effect: (debugPanel && debugEffect !== null ? debugEffect : parallax3dEffect) as 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon',
-				texture: (debugPanel && debugTexture !== null ? debugTexture : parallax3dTexture) as 'solid' | 'gradient' | 'metallic' | 'glass',
+				effect: (debugPanel && debugEffect !== null ? debugEffect : parallax3dEffect) as 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon' | 'random',
+				texture: (debugPanel && debugTexture !== null ? debugTexture : parallax3dTexture) as 'solid' | 'gradient' | 'metallic' | 'glass' | 'random',
 				rainbow: debugPanel && debugRainbow !== null ? debugRainbow : parallax3dRainbow
 			});
 		}
@@ -1721,10 +1738,7 @@
 		if (parallax3dRenderer) {
 			parallax3dRenderer.setDebugOverrides({
 				speedMultiplier: debugSpeedMult,
-				opacityMultiplier: debugOpacityMult,
-				depthMultiplier: debugDepthMult,
-				extrudeMultiplier: debugExtrudeMult,
-				fieldMultiplier: debugFieldMult
+				extrudeMultiplier: debugExtrudeMult
 			});
 		}
 	});
@@ -1736,10 +1750,66 @@
 		}
 	});
 
-	// Debug panel: push game mode
+	// Hide UI activates game mode (WASD, orbit, Space=pause)
 	$effect(() => {
 		if (parallax3dRenderer) {
-			parallax3dRenderer.gameMode = debugGameMode;
+			parallax3dRenderer.setGameMode(debugHideUI);
+		}
+	});
+
+	// Debug panel: push axes visibility
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.showAxes(debugAxes);
+		}
+	});
+
+	// Debug panel: push light settings
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setLights(debugLights, debugLightIntensity);
+		}
+	});
+
+	// Game on/off: toggles invader mode (requires Hide UI)
+	$effect(() => {
+		if (parallax3dRenderer) {
+			const active = debugGame && debugHideUI;
+			parallax3dRenderer.setInvaderMode(active);
+			if (active) {
+				parallax3dRenderer.onScoreChange = (s) => { invaderScore = s; };
+				parallax3dRenderer.onInvaderStatsChange = (stats) => {
+					invaderLives = stats.lives;
+					invaderHighScore = stats.highScore;
+					invaderGameOver = stats.gameOver;
+				};
+				parallax3dRenderer.onInvaderExit = () => { debugGame = false; };
+			} else {
+				parallax3dRenderer.onScoreChange = null;
+				parallax3dRenderer.onInvaderStatsChange = null;
+				parallax3dRenderer.onInvaderExit = null;
+			}
+		}
+	});
+
+	// Debug panel: push invader hit effect
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setInvaderHitEffect(invaderHitEffect);
+		}
+	});
+
+	// Debug panel: push falling text
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setFallingText(debugFallingText);
+		}
+	});
+
+	// Debug panel: push fog toggle
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.setNoFog(debugNoFog);
 		}
 	});
 
@@ -1748,18 +1818,32 @@
 		if (!debugPanel) {
 			debugPaused = false;
 			debugSpeedMult = 1.0;
-			debugOpacityMult = 1.0;
-			debugDepthMult = 1.0;
 			debugExtrudeMult = 0.1;
-			debugFieldMult = 1.0;
 			debugIntensity = null;
 			debugEffect = null;
 			debugTexture = null;
 			debugRainbow = null;
-			debugGameMode = false;
+			debugHideUI = false;
+			debugGame = false;
+			debugNoFog = false;
+			debugAxes = false;
+			debugLights = true;
+			debugLightIntensity = 1.0;
+			debugFallingText = false;
+			invaderScore = 0;
+			invaderLives = 5;
+			invaderHighScore = 0;
+			invaderGameOver = false;
+			invaderHitEffect = 'oblivion';
 			if (parallax3dRenderer) {
 				parallax3dRenderer.setPaused(false);
-				parallax3dRenderer.setDebugOverrides({ speedMultiplier: 1, opacityMultiplier: 1, depthMultiplier: 1, extrudeMultiplier: 0.1, fieldMultiplier: 1 });
+				parallax3dRenderer.setGameMode(false);
+				parallax3dRenderer.showAxes(false);
+				parallax3dRenderer.setLights(true, 1.0);
+				parallax3dRenderer.setInvaderMode(false);
+				parallax3dRenderer.setFallingText(false);
+				parallax3dRenderer.setNoFog(false);
+				parallax3dRenderer.setDebugOverrides({ speedMultiplier: 1, extrudeMultiplier: 0.1 });
 			}
 		}
 	});
@@ -1788,19 +1872,44 @@
 <div
 	class="app"
 	class:parallax={parallax}
-	class:debug-game-mode={debugGameMode}
+	class:debug-game-mode={debugHideUI}
 	dir={uiDir}
 	style="--font-size: {data.settings.fontSize}rem;"
 >
 	<!-- Background effects layer (dots) - always visible when parallax enabled -->
 	<div
 		class="background-effects"
-		class:dot-pattern={dotPattern}
+		class:dot-pattern={dotPattern && !debugHideUI}
 		aria-hidden="true"
 	></div>
 
 	<!-- Three.js 3D container (renders when 3D parallax is enabled) -->
 	<div bind:this={parallax3dContainer} class="parallax3d-container" aria-hidden="true"></div>
+
+	{#if debugGame && debugHideUI}
+		<div class="invader-hud">
+			<span>Score: {invaderScore}</span>
+			<span>Best: {invaderHighScore}</span>
+			<span>Lives: {'|'.repeat(invaderLives)}{'\u00a0'.repeat(Math.max(0, 5 - invaderLives))}</span>
+		</div>
+		{#if invaderGameOver}
+			<div class="invader-gameover">
+				<div class="invader-gameover-box">
+					<div class="invader-gameover-title">Game Over</div>
+					<div>Score: {invaderScore}</div>
+					<div>Best: {invaderHighScore}</div>
+					<button class="invader-restart-btn" onclick={() => {
+						if (parallax3dRenderer) {
+							parallax3dRenderer.resetInvaderGame();
+							invaderScore = 0;
+							invaderLives = 5;
+							invaderGameOver = false;
+						}
+					}}>Play Again</button>
+				</div>
+			</div>
+		{/if}
+	{/if}
 
 	<!-- DOM-based background lanes (fallback when 3D is disabled) -->
 	<div
@@ -2495,6 +2604,13 @@
 		<span>FPS: {debugInfo.fps}</span>
 		<span>Lanes: {debugInfo.laneCount}</span>
 		<span title={debugInfo.rendererInfo}>{debugInfo.rendererInfo.length > 28 ? debugInfo.rendererInfo.slice(0, 28) + '...' : debugInfo.rendererInfo}</span>
+		{#if debugInfo.flySpeed !== undefined}
+			<span>Fly: {debugInfo.flySpeed} u/s</span>
+			<span title={debugInfo.cameraPos}>Pos: {debugInfo.cameraPos}</span>
+		{/if}
+		{#if debugInfo.invaderScore !== undefined}
+			<span>Score: {debugInfo.invaderScore}</span>
+		{/if}
 	</div>
 	<div class="debug-controls">
 		<label class="debug-control">
@@ -2503,24 +2619,9 @@
 			{debugSpeedMult.toFixed(1)}x
 		</label>
 		<label class="debug-control">
-			Opacity
-			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugOpacityMult} />
-			{debugOpacityMult.toFixed(1)}x
-		</label>
-		<label class="debug-control">
-			Depth
-			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugDepthMult} />
-			{debugDepthMult.toFixed(1)}x
-		</label>
-		<label class="debug-control">
 			Height
 			<input type="range" min="0.1" max="5" step="0.1" bind:value={debugExtrudeMult} />
 			{debugExtrudeMult.toFixed(1)}x
-		</label>
-		<label class="debug-control">
-			Field
-			<input type="range" min="0.2" max="5" step="0.1" bind:value={debugFieldMult} />
-			{debugFieldMult.toFixed(1)}x
 		</label>
 		<label class="debug-control">
 			Intensity
@@ -2533,14 +2634,61 @@
 		<button class="debug-btn" onclick={() => { debugPaused = !debugPaused; }}>
 			{debugPaused ? 'Play' : 'Pause'}
 		</button>
-		<button class="debug-btn" onclick={() => { debugGameMode = !debugGameMode; }}>
-			{debugGameMode ? 'Game on' : 'Game off'}
+		<button class="debug-btn" disabled={!debugHideUI} onclick={() => { debugGame = !debugGame; }}>
+			{debugGame ? 'Game on' : 'Game off'}
 		</button>
+		{#if debugGame && debugHideUI}
+			<label class="debug-control">
+				Hit
+				<select class="debug-select" bind:value={invaderHitEffect}>
+					<option value="oblivion">oblivion</option>
+					<option value="explode">explode</option>
+				</select>
+			</label>
+		{/if}
+		<label class="debug-control">
+			Falling
+			<input type="checkbox"
+				checked={debugFallingText}
+				onchange={(e) => { debugFallingText = e.target.checked; }}
+			/>
+		</label>
 		<label class="debug-control">
 			Rainbow
 			<input type="checkbox"
 				checked={debugRainbow !== null ? debugRainbow : parallax3dRainbow}
 				onchange={(e) => { debugRainbow = e.target.checked; }}
+			/>
+		</label>
+		<label class="debug-control">
+			Axes
+			<input type="checkbox" bind:checked={debugAxes} />
+		</label>
+		<label class="debug-control">
+			Lights
+			<input type="checkbox" bind:checked={debugLights} />
+		</label>
+		{#if debugLights}
+		<label class="debug-control">
+			L.Int
+			<input type="range" min="0" max="3" step="0.1"
+				bind:value={debugLightIntensity}
+			/>
+			{debugLightIntensity.toFixed(1)}
+		</label>
+		{/if}
+		<label class="debug-control">
+			No fog
+			<input type="checkbox"
+				checked={debugNoFog}
+				onchange={(e) => { debugNoFog = e.target.checked; }}
+			/>
+		</label>
+		<label class="debug-control">
+			Hide UI
+			<input type="checkbox"
+				checked={debugHideUI}
+				onchange={(e) => { debugHideUI = e.target.checked; if (!e.target.checked) debugGame = false; }}
 			/>
 		</label>
 		<label class="debug-control">
@@ -2555,6 +2703,7 @@
 				<option value="emboss">emboss</option>
 				<option value="extrude">extrude</option>
 				<option value="neon">neon</option>
+				<option value="random">random</option>
 			</select>
 		</label>
 		<label class="debug-control">
@@ -2567,9 +2716,31 @@
 				<option value="gradient">gradient</option>
 				<option value="metallic">metallic</option>
 				<option value="glass">glass</option>
+				<option value="random">random</option>
 			</select>
 		</label>
 	</div>
+	<details class="debug-help">
+		<summary>?</summary>
+		<div class="debug-help-content">
+			<b>Orbit</b> (always)
+			<div>Drag ......... rotate scene</div>
+			<div>Ctrl+Scroll .. zoom</div>
+			<b>Game mode</b>
+			<div>Drag ......... look (yaw/pitch)</div>
+			<div>Middle drag .. pan</div>
+			<div>Scroll ....... fly speed</div>
+			<div>WASD ......... move</div>
+			<div>Space ........ pause</div>
+			<div>Shift ........ descend</div>
+			<div>Q / E ........ roll</div>
+			<div>R ............ reset view</div>
+			<b>Invader mode</b>
+			<div>A/D, Arrows . move pen</div>
+			<div>Space ....... shoot</div>
+			<div>Esc ......... exit</div>
+		</div>
+	</details>
 </div>
 {/if}
 

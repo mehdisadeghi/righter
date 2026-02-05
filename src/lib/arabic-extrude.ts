@@ -1,4 +1,10 @@
-import * as THREE from 'three';
+import {
+	ExtrudeGeometry,
+	Path as ThreePath,
+	Shape,
+	Vector3,
+	type ExtrudeGeometryOptions
+} from 'three';
 import opentype from 'opentype.js';
 import type { Font, PathCommand } from 'opentype.js';
 
@@ -125,8 +131,8 @@ export async function loadFont(url: string): Promise<Font> {
 	return fontLoadPromise;
 }
 
-function pathToShape(path: PathLike, scale: number, offsetX: number, offsetY: number): THREE.Shape | null {
-	const shape = new THREE.Shape();
+function pathToShape(path: PathLike, scale: number, offsetX: number, offsetY: number): Shape | null {
+	const shape = new Shape();
 	const commands = path.commands;
 
 	if (!commands || commands.length === 0) {
@@ -176,7 +182,7 @@ export function createArabicExtrudedText(
 	fontSize: number,
 	depth: number,
 	options: ExtrudeOptions = {}
-): THREE.ExtrudeGeometry | null {
+): ExtrudeGeometry | null {
 	const {
 		bevelEnabled = true,
 		bevelThickness = fontSize * 0.05,
@@ -200,7 +206,7 @@ export function createArabicExtrudedText(
 		return null;
 	}
 
-	const extrudeSettings: THREE.ExtrudeGeometryOptions = {
+	const extrudeSettings: ExtrudeGeometryOptions = {
 		depth: depth,
 		bevelEnabled: bevelEnabled,
 		bevelThickness: bevelThickness,
@@ -209,18 +215,18 @@ export function createArabicExtrudedText(
 		curveSegments: curveSegments
 	};
 
-	const geometry = new THREE.ExtrudeGeometry(shapes, extrudeSettings);
+	const geometry = new ExtrudeGeometry(shapes, extrudeSettings);
 
 	geometry.computeBoundingBox();
-	const center = new THREE.Vector3();
+	const center = new Vector3();
 	geometry.boundingBox!.getCenter(center);
 	geometry.translate(-center.x, -center.y, -depth / 2);
 
 	return geometry;
 }
 
-function pathToShapes(path: PathLike): THREE.Shape[] {
-	const shapes: THREE.Shape[] = [];
+function pathToShapes(path: PathLike): Shape[] {
+	const shapes: Shape[] = [];
 	const commands = path.commands;
 
 	if (!commands || commands.length === 0) {
@@ -316,8 +322,8 @@ function pathToShapes(path: PathLike): THREE.Shape[] {
 	return shapes;
 }
 
-function contourToShape(contour: PathCommand[]): THREE.Shape | null {
-	const shape = new THREE.Shape();
+function contourToShape(contour: PathCommand[]): Shape | null {
+	const shape = new Shape();
 	let hasContent = false;
 
 	for (const cmd of contour) {
@@ -344,8 +350,8 @@ function contourToShape(contour: PathCommand[]): THREE.Shape | null {
 	return hasContent ? shape : null;
 }
 
-function contourToPath(contour: PathCommand[]): THREE.Path {
-	const path = new THREE.Path();
+function contourToPath(contour: PathCommand[]): ThreePath {
+	const path = new ThreePath();
 
 	for (const cmd of contour) {
 		switch (cmd.type) {
