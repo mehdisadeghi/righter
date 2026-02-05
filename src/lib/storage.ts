@@ -1,7 +1,9 @@
+import type { AppData, Settings, RaceResult, HistoryEntry } from './types.js';
+
 const STORAGE_KEY = 'righter_data';
 const RACES_KEY = 'righter_races';
 
-const defaultSettings = {
+const defaultSettings: Settings = {
 	uiLanguage: 'en',
 	keyboardLocale: 'en-US',
 	fontSize: 1.25,
@@ -18,23 +20,21 @@ const defaultSettings = {
 	parallax3dTexture: 'solid',
 	parallax3dRainbow: false,
 	dotPattern: true,
-	// Font settings (per script)
 	fontLatin: 'system',
 	fontArabic: 'vazirmatn',
-	// Relay settings - reliable public relays
+	showHands: true,
 	nostrRelays: [
 		'wss://relay.damus.io',
 		'wss://nos.lol',
 		'wss://relay.snort.social'
 	],
-	// ICE servers for WebRTC (STUN/TURN)
 	iceServers: [
 		{ urls: 'stun:stun.l.google.com:19302' },
 		{ urls: 'stun:stun1.l.google.com:19302' }
 	]
 };
 
-const defaultData = {
+const defaultData: AppData = {
 	settings: { ...defaultSettings },
 	history: [],
 	customTexts: {
@@ -43,7 +43,7 @@ const defaultData = {
 	}
 };
 
-export function loadData() {
+export function loadData(): AppData {
 	if (typeof localStorage === 'undefined') return defaultData;
 
 	try {
@@ -57,7 +57,7 @@ export function loadData() {
 	}
 }
 
-export function saveData(data) {
+export function saveData(data: AppData): void {
 	if (typeof localStorage === 'undefined') return;
 
 	try {
@@ -67,12 +67,12 @@ export function saveData(data) {
 	}
 }
 
-export function exportData() {
+export function exportData(): string {
 	const data = loadData();
 	return JSON.stringify(data, null, 2);
 }
 
-export function importData(jsonString) {
+export function importData(jsonString: string): AppData {
 	try {
 		const data = JSON.parse(jsonString);
 		if (typeof data !== 'object' || data === null) {
@@ -82,11 +82,11 @@ export function importData(jsonString) {
 		saveData(merged);
 		return merged;
 	} catch (e) {
-		throw new Error('Invalid JSON: ' + e.message);
+		throw new Error('Invalid JSON: ' + (e as Error).message);
 	}
 }
 
-export function addRaceResult(result) {
+export function addRaceResult(result: Omit<HistoryEntry, 'timestamp'>): AppData {
 	const data = loadData();
 	data.history.unshift({
 		...result,
@@ -99,28 +99,28 @@ export function addRaceResult(result) {
 	return data;
 }
 
-export function updateSettings(settings) {
+export function updateSettings(settings: Partial<Settings>): AppData {
 	const data = loadData();
 	data.settings = { ...data.settings, ...settings };
 	saveData(data);
 	return data;
 }
 
-export function updateCustomText(lang, text) {
+export function updateCustomText(lang: string, text: string): AppData {
 	const data = loadData();
 	data.customTexts[lang] = text;
 	saveData(data);
 	return data;
 }
 
-export function clearHistory() {
+export function clearHistory(): AppData {
 	const data = loadData();
 	data.history = [];
 	saveData(data);
 	return data;
 }
 
-export function resetSettings() {
+export function resetSettings(): AppData {
 	const data = loadData();
 	data.settings = { ...defaultSettings };
 	saveData(data);
@@ -129,11 +129,7 @@ export function resetSettings() {
 
 // Group race storage (separate from solo history)
 
-/**
- * Load all locally stored group races
- * @returns {Object.<string, import('./nostr.js').RaceResult>}
- */
-export function loadLocalRaces() {
+export function loadLocalRaces(): Record<string, RaceResult> {
 	if (typeof localStorage === 'undefined') return {};
 
 	try {
@@ -145,11 +141,7 @@ export function loadLocalRaces() {
 	}
 }
 
-/**
- * Save group race locally
- * @param {import('./nostr.js').RaceResult} race
- */
-export function saveLocalRace(race) {
+export function saveLocalRace(race: RaceResult): void {
 	if (typeof localStorage === 'undefined') return;
 	if (!race.raceId) return;
 
@@ -157,7 +149,6 @@ export function saveLocalRace(race) {
 		const races = loadLocalRaces();
 		races[race.raceId] = race;
 
-		// Keep only last 500 races to avoid storage limits
 		const raceIds = Object.keys(races);
 		if (raceIds.length > 500) {
 			const sorted = raceIds
@@ -175,40 +166,24 @@ export function saveLocalRace(race) {
 	}
 }
 
-/**
- * Save multiple races (for merge results)
- * @param {import('./nostr.js').RaceResult[]} raceList
- */
-export function saveLocalRaces(raceList) {
+export function saveLocalRaces(raceList: RaceResult[]): void {
 	for (const race of raceList) {
 		saveLocalRace(race);
 	}
 }
 
-/**
- * Get local races as array
- * @returns {import('./nostr.js').RaceResult[]}
- */
-export function getLocalRacesArray() {
+export function getLocalRacesArray(): RaceResult[] {
 	const races = loadLocalRaces();
 	return Object.values(races).sort((a, b) => b.timestamp - a.timestamp);
 }
 
-/**
- * Get races where user participated
- * @param {string} odyseeId
- * @returns {import('./nostr.js').RaceResult[]}
- */
-export function getMyLocalRaces(odyseeId) {
+export function getMyLocalRaces(odyseeId: string): RaceResult[] {
 	return getLocalRacesArray().filter(race =>
 		race.participants.some(p => p.odyseeId === odyseeId)
 	);
 }
 
-/**
- * Clear all local races
- */
-export function clearLocalRaces() {
+export function clearLocalRaces(): void {
 	if (typeof localStorage === 'undefined') return;
 	localStorage.removeItem(RACES_KEY);
 }

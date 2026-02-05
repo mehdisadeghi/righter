@@ -1,46 +1,27 @@
-// CRDT merge logic for race results
-// Strategy: union of participants, latest data wins for conflicts
+import type { RaceResult, ParticipantResult } from './types.js';
 
-/**
- * @typedef {import('./nostr.js').RaceResult} RaceResult
- * @typedef {import('./nostr.js').ParticipantResult} ParticipantResult
- */
-
-/**
- * Merge two race results with same raceId
- * @param {RaceResult} local
- * @param {RaceResult} remote
- * @returns {RaceResult}
- */
-export function mergeRace(local, remote) {
+export function mergeRace(local: RaceResult, remote: RaceResult): RaceResult {
 	if (local.raceId !== remote.raceId) {
 		throw new Error('Cannot merge races with different IDs');
 	}
 
-	// Use newer timestamp for metadata
 	const base = local.timestamp >= remote.timestamp ? local : remote;
 
-	// Merge participants (union)
-	const participantsMap = new Map();
+	const participantsMap = new Map<string, ParticipantResult>();
 
-	// Add local participants
 	for (const p of local.participants) {
 		participantsMap.set(p.odyseeId, p);
 	}
 
-	// Merge remote participants
 	for (const p of remote.participants) {
 		const existing = participantsMap.get(p.odyseeId);
 		if (!existing) {
 			participantsMap.set(p.odyseeId, p);
 		} else {
-			// Same participant in both - keep one with more data or newer
-			// (in practice they should be identical)
 			participantsMap.set(p.odyseeId, existing);
 		}
 	}
 
-	// Recalculate ranks based on WPM
 	const participants = Array.from(participantsMap.values())
 		.sort((a, b) => b.wpm - a.wpm)
 		.map((p, idx) => ({ ...p, rank: idx + 1 }));
@@ -51,13 +32,8 @@ export function mergeRace(local, remote) {
 	};
 }
 
-/**
- * Merge multiple race lists
- * @param {RaceResult[][]} raceLists
- * @returns {RaceResult[]}
- */
-export function mergeRaceLists(...raceLists) {
-	const merged = new Map();
+export function mergeRaceLists(...raceLists: RaceResult[][]): RaceResult[] {
+	const merged = new Map<string, RaceResult>();
 
 	for (const list of raceLists) {
 		for (const race of list) {
@@ -72,31 +48,18 @@ export function mergeRaceLists(...raceLists) {
 		}
 	}
 
-	// Sort by timestamp descending (newest first)
 	return Array.from(merged.values())
 		.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-/**
- * Find races in local that are missing from remote
- * @param {RaceResult[]} local
- * @param {RaceResult[]} remote
- * @returns {RaceResult[]}
- */
-export function findMissingRaces(local, remote) {
+export function findMissingRaces(local: RaceResult[], remote: RaceResult[]): RaceResult[] {
 	const remoteIds = new Set(remote.map(r => r.raceId));
 	return local.filter(r => !remoteIds.has(r.raceId));
 }
 
-/**
- * Find races where local has more participants than remote
- * @param {RaceResult[]} local
- * @param {RaceResult[]} remote
- * @returns {RaceResult[]}
- */
-export function findIncompleteRaces(local, remote) {
+export function findIncompleteRaces(local: RaceResult[], remote: RaceResult[]): RaceResult[] {
 	const remoteMap = new Map(remote.map(r => [r.raceId, r]));
-	const incomplete = [];
+	const incomplete: RaceResult[] = [];
 
 	for (const localRace of local) {
 		const remoteRace = remoteMap.get(localRace.raceId);
@@ -108,13 +71,15 @@ export function findIncompleteRaces(local, remote) {
 	return incomplete;
 }
 
-/**
- * Calculate aggregate stats for a user from race history
- * @param {RaceResult[]} races
- * @param {string} odyseeId
- * @returns {{totalRaces: number, avgWpm: number, avgAccuracy: number, bestWpm: number, wins: number}}
- */
-export function calculateUserStats(races, odyseeId) {
+interface UserStats {
+	totalRaces: number;
+	avgWpm: number;
+	avgAccuracy: number;
+	bestWpm: number;
+	wins: number;
+}
+
+export function calculateUserStats(races: RaceResult[], odyseeId: string): UserStats {
 	const userRaces = races.filter(race =>
 		race.participants.some(p => p.odyseeId === odyseeId)
 	);
@@ -147,15 +112,16 @@ export function calculateUserStats(races, odyseeId) {
 	};
 }
 
-/**
- * Get leaderboard for a keyboard layout
- * @param {RaceResult[]} races
- * @param {string} keyboard
- * @returns {Array<{odyseeId: string, name: string, avgWpm: number, races: number}>}
- */
-export function getKeyboardLeaderboard(races, keyboard) {
+interface LeaderboardEntry {
+	odyseeId: string;
+	name: string;
+	avgWpm: number;
+	races: number;
+}
+
+export function getKeyboardLeaderboard(races: RaceResult[], keyboard: string): LeaderboardEntry[] {
 	const keyboardRaces = races.filter(r => r.keyboard === keyboard);
-	const userStats = new Map();
+	const userStats = new Map<string, { odyseeId: string; name: string; totalWpm: number; races: number }>();
 
 	for (const race of keyboardRaces) {
 		for (const p of race.participants) {
@@ -170,7 +136,6 @@ export function getKeyboardLeaderboard(races, keyboard) {
 			} else {
 				existing.totalWpm += p.wpm;
 				existing.races++;
-				// Update name to most recent
 				existing.name = p.name;
 			}
 		}
@@ -184,5 +149,5 @@ export function getKeyboardLeaderboard(races, keyboard) {
 			races: u.races
 		}))
 		.sort((a, b) => b.avgWpm - a.avgWpm)
-		.slice(0, 50); // Top 50
+		.slice(0, 50);
 }

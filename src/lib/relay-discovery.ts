@@ -1,19 +1,19 @@
-// NIP-66 Relay Discovery and Righter relay preferences
+import type { Identity } from './identity.js';
+import type { RelayInfo } from './types.js';
+import type { Event as NostrEvent } from 'nostr-tools';
 import { finalizeEvent, verifyEvent } from 'nostr-tools';
 import { Relay } from 'nostr-tools/relay';
 
-const NIP66_KIND = 30166; // Relay discovery events
-const RIGHTER_RELAY_KIND = 30079; // App-specific relay preferences (NIP-78 range)
+const NIP66_KIND = 30166;
+const RIGHTER_RELAY_KIND = 30079;
 const CONNECT_TIMEOUT = 5000;
 const FETCH_TIMEOUT = 8000;
 
-// Known NIP-66 monitor relays
 const MONITOR_RELAYS = [
 	'wss://relay.nostr.watch',
 	'wss://history.nostr.watch'
 ];
 
-// Fallback relays if NIP-66 discovery fails
 const FALLBACK_RELAYS = [
 	'wss://relay.damus.io',
 	'wss://nos.lol',
@@ -22,28 +22,11 @@ const FALLBACK_RELAYS = [
 	'wss://relay.nostr.band'
 ];
 
-/**
- * @typedef {Object} RelayInfo
- * @property {string} url
- * @property {number} rttOpen - Open round-trip time in ms
- * @property {number} rttRead - Read round-trip time in ms
- * @property {number} rttWrite - Write round-trip time in ms
- * @property {string[]} nips - Supported NIPs
- * @property {string|null} relayType - Relay type (e.g., PrivateInbox, Search)
- * @property {boolean} requiresPayment
- * @property {boolean} requiresAuth
- */
-
-/**
- * Connect to relay with timeout
- * @param {string} url
- * @returns {Promise<Relay|null>}
- */
-async function connectWithTimeout(url) {
+async function connectWithTimeout(url: string): Promise<Relay | null> {
 	try {
 		const relay = await Promise.race([
 			Relay.connect(url),
-			new Promise((_, reject) =>
+			new Promise<never>((_, reject) =>
 				setTimeout(() => reject(new Error('Timeout')), CONNECT_TIMEOUT)
 			)
 		]);
@@ -53,12 +36,7 @@ async function connectWithTimeout(url) {
 	}
 }
 
-/**
- * Parse NIP-66 event into RelayInfo
- * @param {Object} event
- * @returns {RelayInfo|null}
- */
-function parseNip66Event(event) {
+function parseNip66Event(event: NostrEvent): RelayInfo | null {
 	const tags = event.tags;
 	const dTag = tags.find(t => t[0] === 'd');
 	if (!dTag || !dTag[1]) return null;
@@ -66,9 +44,9 @@ function parseNip66Event(event) {
 	const url = dTag[1];
 	if (!url.startsWith('wss://')) return null;
 
-	const rttOpen = parseInt(tags.find(t => t[0] === 'rtt-open')?.[1]) || 9999;
-	const rttRead = parseInt(tags.find(t => t[0] === 'rtt-read')?.[1]) || 9999;
-	const rttWrite = parseInt(tags.find(t => t[0] === 'rtt-write')?.[1]) || 9999;
+	const rttOpen = parseInt(tags.find(t => t[0] === 'rtt-open')?.[1] ?? '') || 9999;
+	const rttRead = parseInt(tags.find(t => t[0] === 'rtt-read')?.[1] ?? '') || 9999;
+	const rttWrite = parseInt(tags.find(t => t[0] === 'rtt-write')?.[1] ?? '') || 9999;
 
 	const nips = tags.filter(t => t[0] === 'N').map(t => t[1]);
 	const requirements = tags.filter(t => t[0] === 'R').map(t => t[1]);
@@ -86,7 +64,6 @@ function parseNip66Event(event) {
 	};
 }
 
-// Relay types that are specialized and won't accept arbitrary events
 const RESTRICTED_TYPES = new Set([
 	'PrivateInbox',
 	'Search',
@@ -99,22 +76,16 @@ const RESTRICTED_TYPES = new Set([
 	'Archive'
 ]);
 
-/**
- * Fetch fast relays using NIP-66 discovery
- * Filters out specialized relays that restrict event kinds
- * @param {number} count - Number of relays to return
- * @returns {Promise<string[]>} - Array of relay URLs sorted by speed
- */
-export async function fetchFastRelays(count = 5) {
-	const relays = new Map(); // url -> RelayInfo
+export async function fetchFastRelays(count = 5): Promise<string[]> {
+	const relays = new Map<string, RelayInfo>();
 
 	for (const monitorUrl of MONITOR_RELAYS) {
 		try {
 			const relay = await connectWithTimeout(monitorUrl);
 			if (!relay) continue;
 
-			const events = await new Promise((resolve) => {
-				const collected = [];
+			const events = await new Promise<NostrEvent[]>((resolve) => {
+				const collected: NostrEvent[] = [];
 				const filter = {
 					kinds: [NIP66_KIND],
 					limit: 500
@@ -144,19 +115,11 @@ export async function fetchFastRelays(count = 5) {
 				const info = parseNip66Event(event);
 				if (!info) continue;
 
-				// Skip specialized relay types
 				if (info.relayType && RESTRICTED_TYPES.has(info.relayType)) continue;
-
-				// Skip paid/auth relays
 				if (info.requiresPayment || info.requiresAuth) continue;
-
-				// Skip relays with paths (often specialized)
 				if (new URL(info.url).pathname !== '/') continue;
-
-				// Skip slow relays
 				if (info.rttOpen > 500) continue;
 
-				// Keep best RTT per relay
 				const existing = relays.get(info.url);
 				if (!existing || info.rttOpen < existing.rttOpen) {
 					relays.set(info.url, info);
@@ -173,21 +136,17 @@ export async function fetchFastRelays(count = 5) {
 		return FALLBACK_RELAYS.slice(0, count);
 	}
 
-	// Sort by RTT and return top N
 	return Array.from(relays.values())
 		.sort((a, b) => (a.rttOpen + a.rttWrite) - (b.rttOpen + b.rttWrite))
 		.slice(0, count)
 		.map(r => r.url);
 }
 
-/**
- * Publish righter's relay preferences so peers can discover us
- * @param {import('./identity.js').Identity} identity
- * @param {string[]} relayUrls - Relays we're using for racing
- * @param {string[]} publishTo - Relays to publish this announcement to
- * @returns {Promise<{success: number, failed: number}>}
- */
-export async function publishRelayPreferences(identity, relayUrls, publishTo) {
+export async function publishRelayPreferences(
+	identity: Identity,
+	relayUrls: string[],
+	publishTo: string[]
+): Promise<{ success: number; failed: number }> {
 	const event = {
 		kind: RIGHTER_RELAY_KIND,
 		created_at: Math.floor(Date.now() / 1000),
@@ -229,20 +188,17 @@ export async function publishRelayPreferences(identity, relayUrls, publishTo) {
 	return { success, failed };
 }
 
-/**
- * Fetch relay preferences published by a specific user
- * @param {string} pubkeyHex
- * @param {string[]} relayUrls - Relays to query
- * @returns {Promise<string[]|null>} - User's preferred relays or null
- */
-export async function fetchUserRelayPreferences(pubkeyHex, relayUrls) {
+export async function fetchUserRelayPreferences(
+	pubkeyHex: string,
+	relayUrls: string[]
+): Promise<string[] | null> {
 	for (const url of relayUrls) {
 		try {
 			const relay = await connectWithTimeout(url);
 			if (!relay) continue;
 
-			const event = await new Promise((resolve) => {
-				let found = null;
+			const event = await new Promise<NostrEvent | null>((resolve) => {
+				let found: NostrEvent | null = null;
 				const filter = {
 					kinds: [RIGHTER_RELAY_KIND],
 					authors: [pubkeyHex],

@@ -1,24 +1,12 @@
-// User identity management using Nostr keypairs
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { generateName, generateColor } from './names.js';
+import type { Identity } from './types.js';
+
+export type { Identity };
 
 const IDENTITY_KEY = 'righter_identity';
 
-/**
- * @typedef {Object} Identity
- * @property {string} odyseeId - npub (public key in bech32)
- * @property {Uint8Array} secretKey - Private key bytes
- * @property {string} pubkeyHex - Public key in hex
- * @property {string} name - Display name
- * @property {number} color - Hue value (0-360)
- */
-
-/**
- * Load or create user identity
- * @param {boolean} rtl - Whether to generate RTL-friendly name
- * @returns {Identity}
- */
-export function loadIdentity(rtl = false) {
+export function loadIdentity(rtl = false): Identity {
 	if (typeof localStorage === 'undefined') {
 		return createIdentity(rtl);
 	}
@@ -27,7 +15,6 @@ export function loadIdentity(rtl = false) {
 		const stored = localStorage.getItem(IDENTITY_KEY);
 		if (stored) {
 			const parsed = JSON.parse(stored);
-			// Convert stored array back to Uint8Array
 			const secretKey = new Uint8Array(parsed.secretKeyArray);
 			const pubkeyHex = getPublicKey(secretKey);
 			return {
@@ -47,12 +34,7 @@ export function loadIdentity(rtl = false) {
 	return identity;
 }
 
-/**
- * Create a new identity
- * @param {boolean} rtl
- * @returns {Identity}
- */
-function createIdentity(rtl = false) {
+function createIdentity(rtl = false): Identity {
 	const secretKey = generateSecretKey();
 	const pubkeyHex = getPublicKey(secretKey);
 	const odyseeId = nip19.npubEncode(pubkeyHex);
@@ -66,11 +48,7 @@ function createIdentity(rtl = false) {
 	};
 }
 
-/**
- * Save identity to localStorage
- * @param {Identity} identity
- */
-export function saveIdentity(identity) {
+export function saveIdentity(identity: Identity): void {
 	if (typeof localStorage === 'undefined') return;
 
 	const toStore = {
@@ -83,45 +61,23 @@ export function saveIdentity(identity) {
 	localStorage.setItem(IDENTITY_KEY, JSON.stringify(toStore));
 }
 
-/**
- * Update display name
- * @param {Identity} identity
- * @param {string} newName
- * @returns {Identity}
- */
-export function updateName(identity, newName) {
+export function updateName(identity: Identity, newName: string): Identity {
 	const updated = { ...identity, name: newName.trim() || identity.name };
 	saveIdentity(updated);
 	return updated;
 }
 
-/**
- * Update color
- * @param {Identity} identity
- * @param {number} newColor
- * @returns {Identity}
- */
-export function updateColor(identity, newColor) {
+export function updateColor(identity: Identity, newColor: number): Identity {
 	const updated = { ...identity, color: newColor };
 	saveIdentity(updated);
 	return updated;
 }
 
-/**
- * Get short ID for display (first 8 chars of npub)
- * @param {string} npub
- * @returns {string}
- */
-export function shortId(npub) {
+export function shortId(npub: string): string {
 	return npub.slice(0, 12) + '...';
 }
 
-/**
- * Export identity as JSON (for backup)
- * @param {Identity} identity
- * @returns {string}
- */
-export function exportIdentity(identity) {
+export function exportIdentity(identity: Identity): string {
 	const nsec = nip19.nsecEncode(identity.secretKey);
 	return JSON.stringify({
 		npub: identity.odyseeId,
@@ -131,20 +87,15 @@ export function exportIdentity(identity) {
 	}, null, 2);
 }
 
-/**
- * Import identity from JSON backup
- * @param {string} json
- * @returns {Identity}
- */
-export function importIdentity(json) {
+export function importIdentity(json: string): Identity {
 	const parsed = JSON.parse(json);
 	const { data: secretKey } = nip19.decode(parsed.nsec);
-	const pubkeyHex = getPublicKey(secretKey);
+	const pubkeyHex = getPublicKey(secretKey as Uint8Array);
 	const odyseeId = nip19.npubEncode(pubkeyHex);
 
-	const identity = {
+	const identity: Identity = {
 		odyseeId,
-		secretKey,
+		secretKey: secretKey as Uint8Array,
 		pubkeyHex,
 		name: parsed.name || generateName(),
 		color: parsed.color ?? generateColor()

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { base } from '$app/paths';
 	import { replaceState } from '$app/navigation';

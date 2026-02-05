@@ -1,8 +1,21 @@
 import khayyamFa from '$lib/data/khayyam_fa.yaml';
 import khayyamEn from '$lib/data/khayyam_en.yaml';
 import khayyamDe from '$lib/data/khayyam_de.yaml';
+import type { TextItem, TextMeta, Difficulty } from './types.js';
 
-function parseTexts(data) {
+interface YamlData {
+	title: string;
+	author: string;
+	translator: string;
+	translator_url: string;
+	source: string;
+	source_url: string;
+	license: string;
+	language: string;
+	texts: (string | { text: string; number?: number; url?: string })[];
+}
+
+function parseTexts(data: YamlData): TextItem[] {
 	if (!data.texts) return [];
 	return data.texts.map((item) => {
 		if (typeof item === 'string') {
@@ -16,7 +29,7 @@ function parseTexts(data) {
 	});
 }
 
-function extractMeta(data) {
+function extractMeta(data: YamlData): TextMeta {
 	return {
 		title: data.title,
 		author: data.author,
@@ -29,11 +42,11 @@ function extractMeta(data) {
 	};
 }
 
-const textsFA = parseTexts(khayyamFa);
-const textsEN = parseTexts(khayyamEn);
-const textsDE = parseTexts(khayyamDe);
+const textsFA = parseTexts(khayyamFa as YamlData);
+const textsEN = parseTexts(khayyamEn as YamlData);
+const textsDE = parseTexts(khayyamDe as YamlData);
 
-export const texts = {
+export const texts: Record<string, Record<Difficulty, TextItem[]>> = {
 	fa: {
 		easy: textsFA,
 		medium: [],
@@ -54,13 +67,13 @@ export const texts = {
 	}
 };
 
-export const textMeta = {
-	fa: extractMeta(khayyamFa),
-	en: extractMeta(khayyamEn),
-	de: extractMeta(khayyamDe)
+export const textMeta: Record<string, TextMeta> = {
+	fa: extractMeta(khayyamFa as YamlData),
+	en: extractMeta(khayyamEn as YamlData),
+	de: extractMeta(khayyamDe as YamlData)
 };
 
-export function getRandomTextItem(lang, difficulty = 'easy') {
+export function getRandomTextItem(lang: string, difficulty: Difficulty = 'easy'): TextItem {
 	const langTexts = texts[lang];
 	if (!langTexts) return texts.en.easy[0];
 
@@ -72,26 +85,22 @@ export function getRandomTextItem(lang, difficulty = 'easy') {
 	return difficultyTexts[Math.floor(Math.random() * difficultyTexts.length)];
 }
 
-export function getRandomText(lang, difficulty = 'easy') {
-	return getRandomTextItem(lang, difficulty).text;
-}
-
-export function getTextCount(lang, difficulty = 'easy') {
+export function getTextCount(lang: string, difficulty: Difficulty = 'easy'): number {
 	return texts[lang]?.[difficulty]?.length ?? 0;
 }
 
-export function getTextMeta(lang) {
+export function getTextMeta(lang: string): TextMeta {
 	return textMeta[lang] || textMeta.en;
 }
 
-export function getTextByNumber(lang, number, difficulty = 'easy') {
+export function getTextByNumber(lang: string, number: number, difficulty: Difficulty = 'easy'): TextItem | null {
 	const langTexts = texts[lang]?.[difficulty];
 	if (!langTexts) return null;
 	return langTexts.find(item => item.number === number) || null;
 }
 
-export function getAllTexts(lang, difficulty = 'easy') {
+export function getAllTexts(lang: string, difficulty: Difficulty = 'easy'): TextItem[] {
 	return texts[lang]?.[difficulty] || [];
 }
 
-export const difficulties = ['easy', 'medium', 'hard', 'expert'];
+export const difficulties: Difficulty[] = ['easy', 'medium', 'hard', 'expert'];

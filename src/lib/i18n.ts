@@ -1,4 +1,9 @@
-const translations = {
+import type { SupportedLanguage } from './types.js';
+
+type TranslationKey = keyof typeof translations.en;
+type Translations = Record<string, Partial<Record<TranslationKey, string>>>;
+
+const translations: Translations = {
 	en: {
 		appName: 'Righter',
 		wpm: 'WPM',
@@ -1011,26 +1016,26 @@ const translations = {
 	}
 };
 
-export function getTranslation(lang, key) {
-	return translations[lang]?.[key] ?? translations.en[key] ?? key;
+export function getTranslation(lang: string, key: string): string {
+	return translations[lang]?.[key as TranslationKey] ?? translations.en[key as TranslationKey] ?? key;
 }
 
-export function t(lang) {
+export function t(lang: string): (key: string) => string {
 	return (key) => getTranslation(lang, key);
 }
 
-export function detectLanguage() {
+export function detectLanguage(): string {
 	if (typeof navigator === 'undefined') return 'en';
 	const browserLang = navigator.language?.split('-')[0];
 	return browserLang === 'fa' ? 'fa' : 'en';
 }
 
-export function getDirection(lang) {
+export function getDirection(lang: string): 'rtl' | 'ltr' {
 	const rtlLanguages = ['fa', 'ar', 'ur', 'ps', 'ckb', 'sd', 'ug', 'pa', 'ks'];
 	return rtlLanguages.includes(lang) ? 'rtl' : 'ltr';
 }
 
-export const supportedLanguages = [
+export const supportedLanguages: SupportedLanguage[] = [
 	{ code: 'en', name: 'English', nativeName: 'English' },
 	{ code: 'de', name: 'German', nativeName: 'Deutsch' },
 	{ code: 'es', name: 'Spanish', nativeName: 'Español' },

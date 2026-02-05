@@ -1,4 +1,5 @@
-// Multiplayer room management using Yjs + y-webrtc
+import type { Identity } from './identity.js';
+import type { RoomConfig, Participant, RoomState, RaceResult, ParticipantResult } from './types.js';
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { generateRaceId } from './nostr.js';
@@ -10,35 +11,8 @@ const DEFAULT_SIGNALING_SERVERS = [
 const ROOM_PREFIX = 'righter-';
 const CONNECT_TIMEOUT = 10000;
 
-/**
- * @typedef {Object} RoomConfig
- * @property {string} text - Text to type
- * @property {number} duration - Race duration in seconds
- * @property {string} keyboard - Keyboard layout
- */
-
-/**
- * @typedef {Object} Participant
- * @property {string} odyseeId
- * @property {string} name
- * @property {number} color
- * @property {number} progress - Character index
- * @property {number} wpm
- * @property {number} accuracy
- * @property {boolean} finished
- * @property {boolean} connected
- */
-
-/**
- * @typedef {'waiting' | 'countdown' | 'racing' | 'finished'} RoomState
- */
-
-/**
- * Generate a random 4-character room code
- * @returns {string}
- */
-export function generateRoomCode() {
-	const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed ambiguous chars
+export function generateRoomCode(): string {
+	const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 	let code = '';
 	for (let i = 0; i < 4; i++) {
 		code += chars[Math.floor(Math.random() * chars.length)];
@@ -46,23 +20,34 @@ export function generateRoomCode() {
 	return code;
 }
 
-/**
- * @typedef {Object} ConnectionConfig
- * @property {string[]} [signalingServers]
- * @property {{url: string, username: string, credential: string}|null} [turnServer]
- */
+interface ConnectionConfig {
+	signalingServers?: string[];
+	turnServer?: { url: string; username: string; credential: string } | null;
+}
 
-/**
- * Create or join a multiplayer room
- */
+interface YjsParticipant extends Participant {
+	joinedAt?: number;
+}
+
 export class MultiplayerRoom {
-	/**
-	 * @param {string} roomCode
-	 * @param {import('./identity.js').Identity} identity
-	 * @param {RoomConfig} config
-	 * @param {ConnectionConfig} [connectionConfig]
-	 */
-	constructor(roomCode, identity, config, connectionConfig = {}) {
+	roomCode: string;
+	identity: Identity;
+	config: RoomConfig;
+	connectionConfig: ConnectionConfig;
+
+	doc: Y.Doc;
+	provider: WebrtcProvider | null;
+	connected: boolean;
+	destroyed: boolean;
+
+	stateMap: Y.Map<unknown>;
+	participantsMap: Y.Map<YjsParticipant>;
+
+	onStateChange: ((state: ReturnType<MultiplayerRoom['getState']>) => void) | null;
+	onParticipantsChange: ((participants: Participant[]) => void) | null;
+	onConnectionChange: ((connected: boolean) => void) | null;
+
+	constructor(roomCode: string, identity: Identity, config: RoomConfig, connectionConfig: ConnectionConfig = {}) {
 		this.roomCode = roomCode;
 		this.identity = identity;
 		this.config = config;
@@ -73,22 +58,18 @@ export class MultiplayerRoom {
 		this.connected = false;
 		this.destroyed = false;
 
-		// Shared state
 		this.stateMap = this.doc.getMap('state');
 		this.participantsMap = this.doc.getMap('participants');
 
-		// Event handlers
 		this.onStateChange = null;
 		this.onParticipantsChange = null;
 		this.onConnectionChange = null;
 
-		// Setup observers
 		this.stateMap.observe(() => {
 			console.log('State changed:', this.stateMap.get('state'));
 			if (this.onStateChange) {
 				this.onStateChange(this.getState());
 			}
-			// Also update participants when state changes (ensures UI refresh)
 			if (this.onParticipantsChange) {
 				this.onParticipantsChange(this.getParticipants());
 			}
@@ -102,11 +83,7 @@ export class MultiplayerRoom {
 		});
 	}
 
-	/**
-	 * Connect to the room
-	 * @returns {Promise<boolean>}
-	 */
-	async connect() {
+	async connect(): Promise<boolean> {
 		if (this.destroyed) return false;
 
 		return new Promise((resolve) => {
@@ -122,8 +99,7 @@ export class MultiplayerRoom {
 					? this.connectionConfig.signalingServers
 					: DEFAULT_SIGNALING_SERVERS;
 
-				// Build ICE servers config
-				const iceServers = [
+				const iceServers: RTCIceServer[] = [
 					{ urls: 'stun:stun.l.google.com:19302' }
 				];
 				if (this.connectionConfig.turnServer?.url) {
@@ -146,12 +122,10 @@ export class MultiplayerRoom {
 					}
 				);
 
-				// Log signaling connection status
 				this.provider.on('status', ({ status }) => {
 					console.log('Provider status:', status);
 				});
 
-				// Set our identity in awareness so peers can see us
 				this.provider.awareness.setLocalStateField('user', {
 					odyseeId: this.identity.odyseeId,
 					name: this.identity.name,
@@ -159,7 +133,7 @@ export class MultiplayerRoom {
 				});
 
 				this.provider.on('synced', ({ synced }) => {
-					console.log('Synced event:', synced, 'connected:', this.connected, 'peers:', this.provider.room?.webrtcConns?.size || 0);
+					console.log('Synced event:', synced, 'connected:', this.connected, 'peers:', this.provider?.room?.webrtcConns?.size || 0);
 					if (synced && !this.connected) {
 						this.handleConnected(timeout, resolve);
 					}
@@ -167,22 +141,19 @@ export class MultiplayerRoom {
 
 				this.provider.on('peers', ({ added, removed, webrtcPeers, bcPeers }) => {
 					console.log('Peers changed - added:', added.length, 'removed:', removed.length, 'webrtc:', webrtcPeers?.length, 'bc:', bcPeers?.length);
-					// Trigger participants update when peers change
 					if (this.onParticipantsChange) {
 						this.onParticipantsChange(this.getParticipants());
 					}
 				});
 
-				// Also listen for awareness changes
 				this.provider.awareness.on('change', ({ added, updated, removed }) => {
 					console.log('Awareness change - added:', added?.length, 'updated:', updated?.length, 'removed:', removed?.length);
-					console.log('Awareness states:', [...this.provider.awareness.getStates().entries()].map(([id, s]) => s.user?.name));
+					console.log('Awareness states:', [...this.provider!.awareness.getStates().entries()].map(([, s]) => (s as Record<string, Record<string, string>>).user?.name));
 					if (this.onParticipantsChange) {
 						this.onParticipantsChange(this.getParticipants());
 					}
 				});
 
-				// Fallback: consider connected after delay if no sync event
 				setTimeout(() => {
 					if (!this.connected && !this.destroyed) {
 						console.log('Fallback connect triggered');
@@ -198,15 +169,10 @@ export class MultiplayerRoom {
 		});
 	}
 
-	/**
-	 * Handle successful connection
-	 */
-	handleConnected(timeout, resolve) {
+	handleConnected(timeout: ReturnType<typeof setTimeout>, resolve: (value: boolean) => void): void {
 		this.connected = true;
 		clearTimeout(timeout);
 
-		// Only initialize if room is truly empty (no state set)
-		// Use a small delay to allow sync to complete
 		setTimeout(() => {
 			if (!this.stateMap.get('state') && this.config.text) {
 				console.log('Initializing room as first joiner');
@@ -225,10 +191,7 @@ export class MultiplayerRoom {
 		}, 500);
 	}
 
-	/**
-	 * Initialize room state (first joiner)
-	 */
-	initializeRoom() {
+	initializeRoom(): void {
 		this.doc.transact(() => {
 			this.stateMap.set('state', 'waiting');
 			this.stateMap.set('startTime', null);
@@ -238,12 +201,10 @@ export class MultiplayerRoom {
 		});
 	}
 
-	/**
-	 * Join room as participant
-	 */
-	joinRoom() {
-		const participant = {
+	joinRoom(): void {
+		const participant: YjsParticipant = {
 			odyseeId: this.identity.odyseeId,
+			pubkeyHex: this.identity.pubkeyHex ?? '',
 			name: this.identity.name,
 			color: this.identity.color,
 			progress: 0,
@@ -257,13 +218,7 @@ export class MultiplayerRoom {
 		this.participantsMap.set(this.identity.odyseeId, participant);
 	}
 
-	/**
-	 * Update own progress
-	 * @param {number} progress
-	 * @param {number} wpm
-	 * @param {number} accuracy
-	 */
-	updateProgress(progress, wpm, accuracy) {
+	updateProgress(progress: number, wpm: number, accuracy: number): void {
 		const me = this.participantsMap.get(this.identity.odyseeId);
 		if (me) {
 			this.participantsMap.set(this.identity.odyseeId, {
@@ -275,12 +230,7 @@ export class MultiplayerRoom {
 		}
 	}
 
-	/**
-	 * Mark self as finished
-	 * @param {number} wpm
-	 * @param {number} accuracy
-	 */
-	finishRace(wpm, accuracy) {
+	finishRace(wpm: number, accuracy: number): void {
 		const me = this.participantsMap.get(this.identity.odyseeId);
 		if (me) {
 			this.participantsMap.set(this.identity.odyseeId, {
@@ -288,15 +238,12 @@ export class MultiplayerRoom {
 				finished: true,
 				wpm,
 				accuracy,
-				progress: this.stateMap.get('text')?.length || 0
+				progress: (this.stateMap.get('text') as string)?.length || 0
 			});
 		}
 	}
 
-	/**
-	 * Start the race (any participant can call this)
-	 */
-	startCountdown() {
+	startCountdown(): void {
 		const state = this.stateMap.get('state');
 		console.log('startCountdown called, current state:', state, 'participants:', this.getParticipants().map(p => p.name));
 		if (state !== 'waiting') {
@@ -311,7 +258,6 @@ export class MultiplayerRoom {
 			this.stateMap.set('countdownStart', countdownStart);
 		});
 
-		// After 3 seconds, start racing
 		setTimeout(() => {
 			const currentState = this.stateMap.get('state');
 			console.log('Countdown timeout fired, current state:', currentState);
@@ -326,48 +272,32 @@ export class MultiplayerRoom {
 		}, 3000);
 	}
 
-	/**
-	 * End the race
-	 */
-	endRace() {
+	endRace(): void {
 		this.stateMap.set('state', 'finished');
 	}
 
-	/**
-	 * Get current room state
-	 * @returns {{state: RoomState, startTime: number|null, text: string, duration: number, keyboard: string, countdownStart: number|null}}
-	 */
-	getState() {
+	getState(): { state: RoomState; startTime: number | null; text: string; duration: number; keyboard: string; countdownStart: number | null } {
 		return {
-			state: this.stateMap.get('state') || 'waiting',
-			startTime: this.stateMap.get('startTime'),
-			text: this.stateMap.get('text') || this.config.text,
-			duration: this.stateMap.get('duration') || this.config.duration,
-			keyboard: this.stateMap.get('keyboard') || this.config.keyboard,
-			countdownStart: this.stateMap.get('countdownStart')
+			state: (this.stateMap.get('state') as RoomState) || 'waiting',
+			startTime: this.stateMap.get('startTime') as number | null,
+			text: (this.stateMap.get('text') as string) || this.config.text,
+			duration: (this.stateMap.get('duration') as number) || this.config.duration,
+			keyboard: (this.stateMap.get('keyboard') as string) || this.config.keyboard,
+			countdownStart: this.stateMap.get('countdownStart') as number | null
 		};
 	}
 
-	/**
-	 * Get all participants
-	 * @returns {Participant[]}
-	 */
-	getParticipants() {
-		const participants = [];
+	getParticipants(): Participant[] {
+		const participants: Participant[] = [];
 		this.participantsMap.forEach((value, key) => {
 			participants.push({ ...value, odyseeId: key });
 		});
-		// Sort by progress descending
 		return participants.sort((a, b) => b.progress - a.progress);
 	}
 
-	/**
-	 * Get race result for publishing
-	 * @returns {import('./nostr.js').RaceResult}
-	 */
-	getRaceResult() {
+	getRaceResult(): RaceResult {
 		const state = this.getState();
-		const participants = this.getParticipants()
+		const participants: ParticipantResult[] = this.getParticipants()
 			.sort((a, b) => b.wpm - a.wpm)
 			.map((p, idx) => ({
 				odyseeId: p.odyseeId,
@@ -380,7 +310,7 @@ export class MultiplayerRoom {
 
 		return {
 			raceId: generateRaceId(this.roomCode, state.startTime, state.text),
-			timestamp: state.startTime,
+			timestamp: state.startTime ?? Date.now(),
 			room: this.roomCode,
 			keyboard: state.keyboard,
 			duration: state.duration,
@@ -389,23 +319,19 @@ export class MultiplayerRoom {
 		};
 	}
 
-	/**
-	 * Update connection status for all participants
-	 */
-	updateConnectionStatus() {
-		// Mark disconnected participants based on awareness
-		const connectedIds = new Set();
+	updateConnectionStatus(): void {
+		const connectedIds = new Set<string>();
 
 		if (this.provider?.awareness) {
 			const states = this.provider.awareness.getStates();
 			states.forEach((state) => {
-				if (state.user?.odyseeId) {
-					connectedIds.add(state.user.odyseeId);
+				const user = (state as Record<string, Record<string, string>>).user;
+				if (user?.odyseeId) {
+					connectedIds.add(user.odyseeId);
 				}
 			});
 		}
 
-		// Always include self
 		connectedIds.add(this.identity.odyseeId);
 
 		this.participantsMap.forEach((value, key) => {
@@ -416,13 +342,9 @@ export class MultiplayerRoom {
 		});
 	}
 
-	/**
-	 * Leave and cleanup
-	 */
-	destroy() {
+	destroy(): void {
 		this.destroyed = true;
 
-		// Remove self from participants
 		this.participantsMap.delete(this.identity.odyseeId);
 
 		if (this.provider) {
@@ -438,18 +360,11 @@ export class MultiplayerRoom {
 		}
 	}
 
-	/**
-	 * Check if I'm the only participant (for cleanup)
-	 * @returns {boolean}
-	 */
-	isAlone() {
+	isAlone(): boolean {
 		return this.participantsMap.size <= 1;
 	}
 
-	/**
-	 * Get debug info about connection status
-	 */
-	getDebugInfo() {
+	getDebugInfo(): Record<string, unknown> {
 		return {
 			roomName: ROOM_PREFIX + this.roomCode,
 			connected: this.connected,
@@ -465,30 +380,19 @@ export class MultiplayerRoom {
 	}
 }
 
-/**
- * Get room code from URL hash
- * @returns {string|null}
- */
-export function getRoomFromUrl() {
+export function getRoomFromUrl(): string | null {
 	if (typeof window === 'undefined') return null;
 	const hash = window.location.hash;
 	const match = hash.match(/room=([A-Z0-9]{4})/i);
 	return match ? match[1].toUpperCase() : null;
 }
 
-/**
- * Set room code in URL hash
- * @param {string} roomCode
- */
-export function setRoomInUrl(roomCode) {
+export function setRoomInUrl(roomCode: string): void {
 	if (typeof window === 'undefined') return;
 	window.location.hash = `room=${roomCode}`;
 }
 
-/**
- * Clear room from URL hash
- */
-export function clearRoomFromUrl() {
+export function clearRoomFromUrl(): void {
 	if (typeof window === 'undefined') return;
 	window.location.hash = '';
 }

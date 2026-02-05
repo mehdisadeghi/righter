@@ -2,36 +2,30 @@ import * as THREE from 'three';
 import { Text } from 'troika-three-text';
 import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
 import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import type { Font } from 'three/addons/loaders/FontLoader.js';
 import { loadFont as loadOpenTypeFont, createArabicExtrudedText } from './arabic-extrude.js';
+import type { Font as OpenTypeFont } from 'opentype.js';
 
-// Font URLs for Troika (loaded on demand)
-// Relative paths work for both root and subpath hosting
 const FONT_VAZIRMATN = 'fonts/Vazirmatn-Regular.ttf';
-const FONT_SYSTEM = undefined; // Use Troika's default
+const FONT_SYSTEM: undefined = undefined;
 
-// Typeface JSON fonts for TextGeometry (3D extrusion)
-// Bundled locally for offline use
 const FONT_TYPEFACE_URL = 'fonts/helvetiker_regular.typeface.json';
 
-// Cache for loaded fonts
-let loadedFont = null;
-let fontLoadPromise = null;
+let loadedFont: Font | null = null;
+let fontLoadPromise: Promise<Font> | null = null;
 
-// OpenType font for Arabic extrusion
-let arabicFont = null;
-let arabicFontPromise = null;
+let arabicFont: OpenTypeFont | null = null;
+let arabicFontPromise: Promise<OpenTypeFont | null> | null = null;
 
-// Canvas font ready promise (Vazirmatn loaded via CSS @import)
-let canvasFontPromise = null;
+let canvasFontPromise: Promise<FontFaceSet> | null = null;
 
-function loadCanvasFont() {
+function loadCanvasFont(): Promise<FontFaceSet> {
 	if (canvasFontPromise) return canvasFontPromise;
-	// Font is loaded via CSS @import, just wait for it to be ready
 	canvasFontPromise = document.fonts.ready;
 	return canvasFontPromise;
 }
 
-async function loadArabicFont() {
+async function loadArabicFont(): Promise<OpenTypeFont | null> {
 	if (arabicFont) return arabicFont;
 	if (arabicFontPromise) return arabicFontPromise;
 
@@ -49,9 +43,9 @@ async function loadArabicFont() {
 	return arabicFontPromise;
 }
 
-let webglSupported = null;
+let webglSupported: boolean | null = null;
 
-export function isWebGLAvailable() {
+export function isWebGLAvailable(): boolean {
 	if (webglSupported !== null) return webglSupported;
 
 	try {
@@ -65,14 +59,69 @@ export function isWebGLAvailable() {
 	} catch {
 		webglSupported = false;
 	}
-	return webglSupported;
+	return webglSupported!;
 }
 
-// Effect types: 'none', 'outline', 'shadow', 'emboss', 'extrude', 'neon'
-// Texture types: 'solid', 'gradient', 'metallic', 'glass'
+type EffectType = 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon';
+type TextureType = 'solid' | 'gradient' | 'metallic' | 'glass';
+
+interface RendererOptions {
+	intensity?: number;
+	hue?: number;
+	isDark?: boolean;
+	isRTL?: boolean;
+	effect?: EffectType;
+	texture?: TextureType;
+	rainbow?: boolean;
+}
+
+interface Lane {
+	mesh: THREE.Object3D;
+	startX: number;
+	endX: number;
+	startTime: number;
+	duration: number;
+	texture: THREE.CanvasTexture | null;
+	isTroika: boolean;
+}
 
 export class Parallax3DRenderer {
-	constructor(container, options = {}) {
+	container: HTMLElement;
+	lanes: Map<number, Lane>;
+	laneIdCounter: number;
+	intensity: number;
+	hue: number;
+	isDark: boolean;
+	isRTL: boolean;
+	effect: EffectType;
+	texture: TextureType;
+	rainbow: boolean;
+
+	rotationX: number;
+	rotationY: number;
+	velocityX: number;
+	velocityY: number;
+	isDragging: boolean;
+	lastMouseX: number;
+	lastMouseY: number;
+	lastDragTime: number;
+
+	animationId: number | null;
+	disposed: boolean;
+	font: Font | null;
+	contextLost: boolean;
+
+	scene!: THREE.Scene;
+	camera!: THREE.PerspectiveCamera;
+	renderer!: THREE.WebGLRenderer;
+
+	private _boundResize!: () => void;
+	private _boundMouseDown!: (e: MouseEvent) => void;
+	private _boundMouseUp!: () => void;
+	private _boundMouseMove!: (e: MouseEvent) => void;
+	private _boundWheel!: (e: WheelEvent) => void;
+
+	constructor(container: HTMLElement, options: RendererOptions = {}) {
 		this.container = container;
 		this.lanes = new Map();
 		this.laneIdCounter = 0;
@@ -84,7 +133,6 @@ export class Parallax3DRenderer {
 		this.texture = options.texture ?? 'solid';
 		this.rainbow = options.rainbow ?? false;
 
-		// Camera rotation state
 		this.rotationX = 0;
 		this.rotationY = 0;
 		this.velocityX = 0;
@@ -97,36 +145,35 @@ export class Parallax3DRenderer {
 		this.animationId = null;
 		this.disposed = false;
 		this.font = null;
+		this.contextLost = false;
 
 		this._init();
 		this._loadFont();
 		if (this.isRTL) {
 			loadCanvasFont();
-			loadArabicFont(); // Pre-load for extrusion
+			loadArabicFont();
 		}
 	}
 
-	async _loadFont() {
-		// Use cached font if available
+	async _loadFont(): Promise<void> {
 		if (loadedFont) {
 			this.font = loadedFont;
 			console.debug('3D font: using cached');
 			return;
 		}
 
-		// Share the loading promise to avoid duplicate loads
 		if (!fontLoadPromise) {
-			fontLoadPromise = new Promise((resolve, reject) => {
+			fontLoadPromise = new Promise<Font>((resolve, reject) => {
 				const loader = new FontLoader();
 				loader.load(
 					FONT_TYPEFACE_URL,
-					(font) => {
+					(font: Font) => {
 						console.debug('3D font: loaded');
 						loadedFont = font;
 						resolve(font);
 					},
 					undefined,
-					(err) => {
+					(err: unknown) => {
 						console.debug('3D font: load failed', err);
 						reject(err);
 					}
@@ -141,16 +188,14 @@ export class Parallax3DRenderer {
 		}
 	}
 
-	_init() {
+	_init(): void {
 		const width = window.innerWidth;
 		const height = window.innerHeight;
 
 		this.scene = new THREE.Scene();
 
-		// Add fog to hide spawn boundaries - lines fade in from edges
 		this._updateFog();
 
-		// Add lighting for 3D geometry
 		const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
 		this.scene.add(ambientLight);
 
@@ -180,7 +225,6 @@ export class Parallax3DRenderer {
 		this.renderer.domElement.style.zIndex = '-1';
 		this.renderer.domElement.style.pointerEvents = 'none';
 
-		// Handle WebGL context loss/restore
 		this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
 			console.debug('WebGL: context lost');
 			e.preventDefault();
@@ -190,7 +234,6 @@ export class Parallax3DRenderer {
 			console.debug('WebGL: context restored');
 			this.contextLost = false;
 		});
-		this.contextLost = false;
 
 		this._boundResize = this._onResize.bind(this);
 		this._boundMouseDown = this._onMouseDown.bind(this);
@@ -207,7 +250,7 @@ export class Parallax3DRenderer {
 		this._animate();
 	}
 
-	_onResize() {
+	_onResize(): void {
 		const width = window.innerWidth;
 		const height = window.innerHeight;
 		this.camera.aspect = width / height;
@@ -216,54 +259,46 @@ export class Parallax3DRenderer {
 		this._updateFog();
 	}
 
-	_onMouseDown(e) {
-		// Only start drag if clicking on background, not UI elements
-		const target = e.target;
+	_onMouseDown(e: MouseEvent): void {
+		const target = e.target as HTMLElement;
 		const isInteractive = target.closest('button, input, select, textarea, a, label, .settings-panel, .metrics-bar, .text-display, .input-area, .controls, .keyboard-container, .results-panel, .multiplayer-panel');
 		if (isInteractive) return;
 
-		// Prevent text selection during drag
 		e.preventDefault();
 
 		this.isDragging = true;
 		this.lastMouseX = e.clientX;
 		this.lastMouseY = e.clientY;
 		this.lastDragTime = performance.now();
-		// Kill velocity when grabbing to stop momentum
 		this.velocityX = 0;
 		this.velocityY = 0;
 		document.body.style.userSelect = 'none';
 	}
 
-	_onMouseUp() {
+	_onMouseUp(): void {
 		if (this.isDragging) {
 			document.body.style.userSelect = '';
 		}
 		this.isDragging = false;
-		// Velocity is already set from the last mouse move, momentum continues
 	}
 
-	_onMouseMove(e) {
+	_onMouseMove(e: MouseEvent): void {
 		if (!this.isDragging) return;
 
 		const now = performance.now();
-		const dt = Math.max(1, now - this.lastDragTime); // ms since last move
+		const dt = Math.max(1, now - this.lastDragTime);
 		const deltaX = e.clientX - this.lastMouseX;
 		const deltaY = e.clientY - this.lastMouseY;
 
-		// Sensitivity: radians per pixel
 		const sensitivity = 0.003;
 
-		// Apply rotation directly while dragging (immediate response)
 		this.rotationY -= deltaX * sensitivity;
 		this.rotationX -= deltaY * sensitivity;
 
-		// Clamp rotation
 		const maxRotation = 0.8;
 		this.rotationX = Math.max(-maxRotation, Math.min(maxRotation, this.rotationX));
 		this.rotationY = Math.max(-maxRotation, Math.min(maxRotation, this.rotationY));
 
-		// Track velocity for momentum (radians per ms)
 		this.velocityX = (-deltaY * sensitivity) / dt;
 		this.velocityY = (-deltaX * sensitivity) / dt;
 
@@ -272,8 +307,7 @@ export class Parallax3DRenderer {
 		this.lastDragTime = now;
 	}
 
-	_onWheel(e) {
-		// Ctrl+scroll for zoom
+	_onWheel(e: WheelEvent): void {
 		if (!e.ctrlKey) return;
 
 		e.preventDefault();
@@ -281,16 +315,13 @@ export class Parallax3DRenderer {
 		const zoomSpeed = 100;
 		const delta = e.deltaY > 0 ? zoomSpeed : -zoomSpeed;
 
-		// Adjust camera Z position (zoom) - very deep range
 		this.camera.position.z = Math.max(50, Math.min(15000, this.camera.position.z + delta));
 	}
 
-	_updateFog() {
-		// Fog color based on theme
+	_updateFog(): void {
 		const fogL = this.isDark ? 10 : 97;
 		const fogColor = new THREE.Color(`hsl(${this.hue}, 10%, ${fogL}%)`);
 
-		// Fog far enough that camera rotation doesn't push visible lines into it
 		const viewportSize = Math.max(window.innerWidth, window.innerHeight);
 		const fogNear = viewportSize * 0.8;
 		const fogFar = viewportSize * 1.2;
@@ -298,11 +329,10 @@ export class Parallax3DRenderer {
 		this.scene.fog = new THREE.Fog(fogColor, fogNear, fogFar);
 	}
 
-	_createTextTexture(text, fontSize) {
+	_createTextTexture(text: string, fontSize: number): { texture: THREE.CanvasTexture; width: number; height: number } {
 		const canvas = document.createElement('canvas');
-		const ctx = canvas.getContext('2d');
+		const ctx = canvas.getContext('2d')!;
 
-		// Use Vazirmatn for RTL text, system fonts for LTR
 		const fontFamily = this.isRTL
 			? "'Vazirmatn', 'Tahoma', system-ui, sans-serif"
 			: "system-ui, -apple-system, sans-serif";
@@ -332,60 +362,51 @@ export class Parallax3DRenderer {
 		return { texture, width: canvas.width, height: canvas.height };
 	}
 
-	_getTextureColor(baseL, baseSat) {
-		// Returns color based on texture setting
+	_getTextureColor(baseL: number, baseSat: number): { l: number; s: number } {
 		switch (this.texture) {
 			case 'gradient':
-				// Slightly more saturated for gradient effect
 				return { l: baseL, s: baseSat + 15 };
 			case 'metallic':
-				// Higher saturation, adjusted lightness for metallic sheen
 				return { l: this.isDark ? baseL + 10 : baseL - 5, s: baseSat + 25 };
 			case 'glass':
-				// Lower saturation for glass/frosted look
 				return { l: baseL, s: Math.max(5, baseSat - 10) };
-			default: // solid
+			default:
 				return { l: baseL, s: baseSat };
 		}
 	}
 
-	_getTextureOpacity(baseOpacity) {
+	_getTextureOpacity(baseOpacity: number): number {
 		switch (this.texture) {
 			case 'solid':
-				return Math.min(1, baseOpacity * 3); // Much more opaque for solid
+				return Math.min(1, baseOpacity * 3);
 			case 'glass':
-				return baseOpacity * 0.8; // Slightly transparent
+				return baseOpacity * 0.8;
 			case 'metallic':
-				return Math.min(1, baseOpacity * 2.5); // More opaque for metallic
+				return Math.min(1, baseOpacity * 2.5);
 			default:
 				return baseOpacity;
 		}
 	}
 
-	_createTroikaText(text, fontSize, opacity) {
+	_createTroikaText(text: string, fontSize: number, opacity: number): THREE.Object3D {
 		const baseL = this.isDark ? 70 : 35;
 		const baseSat = 20;
 		const { l, s } = this._getTextureColor(baseL, baseSat);
 		const finalOpacity = this._getTextureOpacity(opacity);
 
-		// Effects that need actual 3D depth (Z-stacked layers)
 		const needs3DDepth = ['extrude', 'shadow', 'emboss'].includes(this.effect);
 
 		if (needs3DDepth) {
 			return this._create3DDepthText(text, fontSize, finalOpacity, l, s);
 		}
 
-		// Rainbow mode for 2D effects
 		if (this.rainbow) {
-			// For RTL, use colorRanges to preserve connected letters
-			// For LTR, use per-character meshes for better effect control
 			if (this.isRTL) {
 				return this._createRainbowTroikaTextRTL(text, fontSize, finalOpacity, l, s);
 			}
 			return this._createRainbowTroikaText(text, fontSize, finalOpacity, l, s);
 		}
 
-		// 2D effects use single text mesh
 		const textMesh = new Text();
 		textMesh.text = text;
 		textMesh.fontSize = fontSize;
@@ -401,7 +422,7 @@ export class Parallax3DRenderer {
 			case 'neon':
 				this._applyNeonEffect(textMesh, fontSize, finalOpacity, l, s);
 				break;
-			default: // 'none' - flat text with texture color
+			default:
 				textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 				textMesh.fillOpacity = finalOpacity;
 		}
@@ -410,13 +431,13 @@ export class Parallax3DRenderer {
 		return textMesh;
 	}
 
-	_createRainbowTroikaText(text, fontSize, finalOpacity, l, s) {
+	_createRainbowTroikaText(text: string, fontSize: number, finalOpacity: number, l: number, s: number): THREE.Group {
 		const group = new THREE.Group();
 		group.userData.isTroikaGroup = true;
 		group.userData.textMeshes = [];
 
 		const chars = [...text];
-		const charWidth = fontSize * 0.6; // Approximate character width
+		const charWidth = fontSize * 0.6;
 		const totalWidth = chars.length * charWidth;
 		let xOffset = -totalWidth / 2;
 
@@ -458,8 +479,7 @@ export class Parallax3DRenderer {
 		return group;
 	}
 
-	_createRainbowTroikaTextRTL(text, fontSize, finalOpacity, l, s) {
-		// For RTL, use a random rainbow hue per line (can't do per-char without breaking shaping)
+	_createRainbowTroikaTextRTL(text: string, fontSize: number, finalOpacity: number, l: number, s: number): Text {
 		const textMesh = new Text();
 		textMesh.text = text;
 		textMesh.fontSize = fontSize;
@@ -469,11 +489,9 @@ export class Parallax3DRenderer {
 		textMesh.direction = 'rtl';
 		textMesh.fillOpacity = finalOpacity;
 
-		// Random rainbow hue for this line
 		const hue = Math.random() * 360;
 		textMesh.color = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
 
-		// Apply effects with matching hue
 		switch (this.effect) {
 			case 'outline': {
 				const outlineL = this.isDark ? 30 : 70;
@@ -501,7 +519,7 @@ export class Parallax3DRenderer {
 		return textMesh;
 	}
 
-	_applyOutlineEffectWithHue(textMesh, fontSize, opacity, l, s, hue) {
+	_applyOutlineEffectWithHue(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, hue: number): void {
 		const outlineL = this.isDark ? 30 : 70;
 		textMesh.color = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
 		textMesh.fillOpacity = opacity;
@@ -510,7 +528,7 @@ export class Parallax3DRenderer {
 		textMesh.outlineOpacity = opacity * 0.8;
 	}
 
-	_applyNeonEffectWithHue(textMesh, fontSize, opacity, l, hue) {
+	_applyNeonEffectWithHue(textMesh: Text, fontSize: number, opacity: number, l: number, hue: number): void {
 		const glowL = this.isDark ? 60 : 50;
 		const coreL = this.isDark ? 90 : 95;
 		textMesh.color = new THREE.Color(`hsl(${hue}, 80%, ${coreL}%)`);
@@ -524,19 +542,16 @@ export class Parallax3DRenderer {
 		textMesh.strokeOpacity = opacity * 0.8;
 	}
 
-	_create3DDepthText(text, fontSize, opacity, l, s) {
-		// For extrude effect with loaded font, use real 3D TextGeometry
+	_create3DDepthText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Object3D {
 		if (this.effect === 'extrude') {
 			if (this.isRTL && arabicFont) {
-				// Use OpenType-based Arabic extrusion
-				return this._createArabicExtrudedText(text, fontSize, opacity, l, s);
+				const mesh = this._createArabicExtrudedText(text, fontSize, opacity, l, s);
+				if (mesh) return mesh;
 			} else if (!this.isRTL && this.font) {
-				// Use Helvetiker for Latin
 				return this._createExtrudedText(text, fontSize, opacity, l, s);
 			}
 		}
 
-		// Layered approach for shadow/emboss effects
 		const group = new THREE.Group();
 		group.userData.isTroikaGroup = true;
 		group.userData.textMeshes = [];
@@ -560,7 +575,6 @@ export class Parallax3DRenderer {
 
 			switch (this.effect) {
 				case 'extrude':
-					// Fallback when font not loaded
 					this._styleExtrudeLayer(textMesh, fontSize, opacity, l, s, layerProgress, i === 0);
 					break;
 				case 'shadow':
@@ -579,20 +593,17 @@ export class Parallax3DRenderer {
 		return group;
 	}
 
-	_createExtrudedText(text, fontSize, opacity, l, s) {
+	_createExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Object3D {
 		const depth = fontSize * 2;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
 
-		// Rainbow mode: create separate mesh per character
-		// Skip for RTL - Arabic/Persian script requires connected letters
 		if (this.rainbow && !this.isRTL) {
 			return this._createRainbowExtrudedText(text, fontSize, depth, finalOpacity, isTransparent, l, s);
 		}
 
-		// Standard single-color extruded text
 		const geometry = new TextGeometry(text, {
-			font: this.font,
+			font: this.font!,
 			size: fontSize,
 			depth: depth,
 			curveSegments: 6,
@@ -606,7 +617,6 @@ export class Parallax3DRenderer {
 		geometry.center();
 
 		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
-		// Dark mode: darker sides. Light mode: lighter sides for softer 3D effect
 		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
 		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
 
@@ -635,13 +645,12 @@ export class Parallax3DRenderer {
 		return mesh;
 	}
 
-	_createArabicExtrudedText(text, fontSize, opacity, l, s) {
+	_createArabicExtrudedText(text: string, fontSize: number, opacity: number, l: number, s: number): THREE.Mesh | null {
 		const depth = fontSize * 2;
 		const finalOpacity = this.texture === 'solid' ? Math.min(1, opacity * 4) : opacity;
 		const isTransparent = finalOpacity < 0.99;
 
-		// Use OpenType-based extrusion which handles Arabic shaping
-		const geometry = createArabicExtrudedText(arabicFont, text, fontSize, depth, {
+		const geometry = createArabicExtrudedText(arabicFont!, text, fontSize, depth, {
 			bevelEnabled: true,
 			bevelThickness: fontSize * 0.05,
 			bevelSize: fontSize * 0.04,
@@ -650,16 +659,13 @@ export class Parallax3DRenderer {
 		});
 
 		if (!geometry) {
-			// Fallback to layered approach if geometry creation fails
 			return null;
 		}
 
 		const frontColor = new THREE.Color(`hsl(${this.hue}, ${s + 10}%, ${l}%)`);
-		// Dark mode: darker sides. Light mode: lighter sides for softer 3D effect
 		const sideL = this.isDark ? Math.max(10, l - 25) : Math.min(90, l + 20);
 		const sideColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${sideL}%)`);
 
-		// Rainbow mode for Arabic - use random hue per word (can't do per-char)
 		let finalFrontColor = frontColor;
 		let finalSideColor = sideColor;
 		if (this.rainbow) {
@@ -694,13 +700,13 @@ export class Parallax3DRenderer {
 		return mesh;
 	}
 
-	_createRainbowExtrudedText(text, fontSize, depth, finalOpacity, isTransparent, l, s) {
+	_createRainbowExtrudedText(text: string, fontSize: number, depth: number, finalOpacity: number, isTransparent: boolean, l: number, s: number): THREE.Group {
 		const group = new THREE.Group();
 		group.userData.isExtrudedText = true;
 		group.userData.geometries = [];
 		group.userData.materials = [];
 
-		const chars = [...text]; // Handle unicode properly
+		const chars = [...text];
 		let xOffset = 0;
 
 		chars.forEach((char, i) => {
@@ -710,7 +716,7 @@ export class Parallax3DRenderer {
 			}
 
 			const charGeometry = new TextGeometry(char, {
-				font: this.font,
+				font: this.font!,
 				size: fontSize,
 				depth: depth,
 				curveSegments: 4,
@@ -721,9 +727,8 @@ export class Parallax3DRenderer {
 			});
 
 			charGeometry.computeBoundingBox();
-			const charWidth = charGeometry.boundingBox.max.x - charGeometry.boundingBox.min.x;
+			const charWidth = charGeometry.boundingBox!.max.x - charGeometry.boundingBox!.min.x;
 
-			// Rainbow hue based on character position
 			const hue = (i * 360 / Math.max(chars.length, 1)) % 360;
 			const frontColor = new THREE.Color(`hsl(${hue}, 70%, ${l}%)`);
 			const sideL = this.isDark ? Math.max(15, l - 20) : Math.min(90, l + 20);
@@ -756,7 +761,6 @@ export class Parallax3DRenderer {
 			xOffset += charWidth + fontSize * 0.05;
 		});
 
-		// Center the group
 		const totalWidth = xOffset;
 		group.children.forEach(child => {
 			child.position.x -= totalWidth / 2;
@@ -767,17 +771,14 @@ export class Parallax3DRenderer {
 		return group;
 	}
 
-	_styleExtrudeLayer(textMesh, fontSize, opacity, l, s, progress, isFront) {
-		// Front face is brightest, back layers get progressively darker (like a 3D block)
+	_styleExtrudeLayer(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, progress: number, isFront: boolean): void {
 		const layerL = isFront ? l : Math.max(5, l - progress * 50);
 		const layerSat = isFront ? s + 10 : Math.max(5, s - progress * 15);
-		// Keep back layers fairly opaque so they're visible as depth
 		const layerOpacity = isFront ? opacity : opacity * (1.0 - progress * 0.4);
 
 		textMesh.color = new THREE.Color(`hsl(${this.hue}, ${Math.max(5, layerSat)}%, ${layerL}%)`);
 		textMesh.fillOpacity = layerOpacity;
 
-		// Front layer gets a stroke for definition
 		if (isFront) {
 			textMesh.strokeWidth = fontSize * 0.02;
 			textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, ${s}%, ${this.isDark ? 95 : 10}%)`);
@@ -785,39 +786,34 @@ export class Parallax3DRenderer {
 		}
 	}
 
-	_styleShadowLayer(textMesh, fontSize, opacity, l, s, progress, isFront) {
+	_styleShadowLayer(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, progress: number, isFront: boolean): void {
 		if (isFront) {
-			// Front is the main text
 			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 			textMesh.fillOpacity = opacity;
 		} else {
-			// Shadow layers: very dark, offset diagonally for 3D shadow
 			const shadowL = this.isDark ? 8 : 15;
 			textMesh.color = new THREE.Color(`hsl(${this.hue}, 5%, ${shadowL}%)`);
 			textMesh.fillOpacity = opacity * (0.7 - progress * 0.5);
-			// Offset shadow layers diagonally for directional depth
 			textMesh.position.x = progress * fontSize * 0.3;
 			textMesh.position.y = -progress * fontSize * 0.3;
 		}
 	}
 
-	_styleEmbossLayer(textMesh, fontSize, opacity, l, s, progress, isFront) {
+	_styleEmbossLayer(textMesh: Text, fontSize: number, opacity: number, l: number, s: number, progress: number, isFront: boolean): void {
 		if (isFront) {
-			// Main text with highlight
 			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 			textMesh.fillOpacity = opacity;
 			textMesh.strokeWidth = fontSize * 0.025;
 			textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, ${s - 10}%, ${this.isDark ? 90 : 98}%)`);
 			textMesh.strokeOpacity = opacity * 0.6;
 		} else {
-			// Back layers create embossed depth - darker toward back
 			const backL = this.isDark ? Math.max(5, l - 30 - progress * 25) : Math.min(90, l + 20 + progress * 15);
 			textMesh.color = new THREE.Color(`hsl(${this.hue}, ${Math.max(5, s - 10)}%, ${backL}%)`);
 			textMesh.fillOpacity = opacity * (0.9 - progress * 0.5);
 		}
 	}
 
-	_applyOutlineEffect(textMesh, fontSize, opacity, l, s) {
+	_applyOutlineEffect(textMesh: Text, fontSize: number, opacity: number, l: number, s: number): void {
 		const outlineL = this.isDark ? 30 : 70;
 		textMesh.color = new THREE.Color(`hsl(${this.hue}, ${s}%, ${l}%)`);
 		textMesh.fillOpacity = opacity;
@@ -826,34 +822,29 @@ export class Parallax3DRenderer {
 		textMesh.outlineOpacity = opacity * 0.8;
 	}
 
-	_applyNeonEffect(textMesh, fontSize, opacity, l, s) {
-		// Neon: bright core with glowing outline
+	_applyNeonEffect(textMesh: Text, fontSize: number, opacity: number, l: number, s: number): void {
 		const glowL = this.isDark ? 60 : 50;
 		const coreL = this.isDark ? 90 : 95;
 		textMesh.color = new THREE.Color(`hsl(${this.hue}, 80%, ${coreL}%)`);
 		textMesh.fillOpacity = opacity * 1.2;
-		// Glow layers
 		textMesh.outlineWidth = fontSize * 0.2;
 		textMesh.outlineColor = new THREE.Color(`hsl(${this.hue}, 100%, ${glowL}%)`);
 		textMesh.outlineOpacity = opacity * 0.4;
 		textMesh.outlineBlur = fontSize * 0.15;
-		// Inner glow
 		textMesh.strokeWidth = fontSize * 0.04;
 		textMesh.strokeColor = new THREE.Color(`hsl(${this.hue}, 90%, ${glowL + 10}%)`);
 		textMesh.strokeOpacity = opacity * 0.8;
 	}
 
-	async spawnLane(text, direction, initialProgress = 0) {
-		// Wait for font if using extrude effect
+	async spawnLane(text: string, direction: 'ltr' | 'rtl', initialProgress = 0): Promise<number> {
 		if (this.effect === 'extrude' && !this.font && fontLoadPromise) {
 			try {
 				this.font = await fontLoadPromise;
-			} catch (e) {
+			} catch {
 				// Font failed, will use fallback
 			}
 		}
 
-		// Wait for canvas font if RTL and using canvas texture
 		const useTroika = this.effect !== 'none' || this.texture !== 'solid';
 		if (this.isRTL && !useTroika && canvasFontPromise) {
 			await canvasFontPromise;
@@ -867,20 +858,17 @@ export class Parallax3DRenderer {
 		const depthRand = Math.random();
 
 		const fontSize = 20 + Math.pow(sizeRand, 2) * 80 * intensity;
-		// Light mode needs higher opacity for visibility against light background
 		const opacityMultiplier = this.isDark ? 1 : 2.5;
 		const opacity = (0.03 + Math.pow(opacityRand, 2) * 0.2) * intensity * opacityMultiplier;
 
-		let mesh;
-		let texture = null;
-		let estimatedWidth;
+		let mesh: THREE.Object3D;
+		let texture: THREE.CanvasTexture | null = null;
+		let estimatedWidth: number;
 
 		if (useTroika) {
-			// Use Troika for 3D effects/textures
 			mesh = this._createTroikaText(text, fontSize, opacity);
 			estimatedWidth = text.length * fontSize * 0.6;
 		} else {
-			// Use canvas texture for flat text
 			const result = this._createTextTexture(text, fontSize);
 			texture = result.texture;
 
@@ -900,37 +888,29 @@ export class Parallax3DRenderer {
 		const z = -100 - depthRand * 600 * intensity;
 		const y = (Math.random() - 0.5) * 800;
 
-		// Perspective-correct spawn: lines converge to vanishing point
-		// Further lines (more negative Z) spawn closer to center
 		const cameraZ = this.camera.position.z;
 		const distanceFromCamera = cameraZ - z;
-		const referenceDistance = cameraZ + 100; // reference plane
+		const referenceDistance = cameraZ + 100;
 		const perspectiveScale = distanceFromCamera / referenceDistance;
 
-		// Use viewport size for consistent behavior across window sizes
 		const viewportSize = Math.max(window.innerWidth, window.innerHeight);
-		// Spawn behind fog (fog far is at 1.2x viewport)
 		const baseSpawnOffset = viewportSize * 1.3 + estimatedWidth;
 		const baseDeleteOffset = viewportSize * 1.3 + estimatedWidth;
 
-		// Scale by perspective - far lines spawn closer to center
 		const spawnOffset = baseSpawnOffset * perspectiveScale;
 		const deleteOffset = baseDeleteOffset * perspectiveScale;
 
 		const startX = direction === 'rtl' ? -spawnOffset : spawnOffset;
 		const endX = direction === 'rtl' ? deleteOffset : -deleteOffset;
 
-		// Duration based on total travel distance - faster speeds so lines reach view quickly
 		const totalDistance = Math.abs(endX - startX);
-		const baseSpeed = (250 + Math.pow(speedRand, 2) * 400) * intensity; // pixels per second
-		const sizeFactor = 1 / (1 + fontSize / 150); // larger = slower (reduced impact)
+		const baseSpeed = (250 + Math.pow(speedRand, 2) * 400) * intensity;
+		const sizeFactor = 1 / (1 + fontSize / 150);
 		const duration = totalDistance / (baseSpeed * sizeFactor);
 
-		// Apply initial progress (for burst spawns that start mid-flight)
 		const initialX = startX + (endX - startX) * initialProgress;
 		mesh.position.set(initialX, y, z);
 
-		// Adjust start time so animation continues from initial progress
 		const now = performance.now();
 		const adjustedStartTime = now - (initialProgress * duration * 1000);
 
@@ -949,7 +929,7 @@ export class Parallax3DRenderer {
 		return id;
 	}
 
-	removeLane(id) {
+	removeLane(id: number): void {
 		const lane = this.lanes.get(id);
 		if (lane) {
 			this.scene.remove(lane.mesh);
@@ -961,39 +941,34 @@ export class Parallax3DRenderer {
 		}
 	}
 
-	_disposeMesh(mesh) {
-		// Recursively dispose all children first
+	_disposeMesh(mesh: THREE.Object3D): void {
 		if (mesh.children?.length) {
 			for (const child of [...mesh.children]) {
 				this._disposeMesh(child);
 			}
 		}
 
-		// Dispose geometry
-		if (mesh.geometry) {
-			mesh.geometry.dispose();
+		const m = mesh as THREE.Mesh;
+		if (m.geometry) {
+			m.geometry.dispose();
 		}
 
-		// Dispose material(s)
-		if (mesh.material) {
-			if (Array.isArray(mesh.material)) {
-				for (const mat of mesh.material) {
+		if (m.material) {
+			if (Array.isArray(m.material)) {
+				for (const mat of m.material) {
 					mat.dispose();
 				}
 			} else {
-				mesh.material.dispose();
+				m.material.dispose();
 			}
 		}
 
-		// Troika text has its own dispose
-		if (typeof mesh.dispose === 'function') {
-			mesh.dispose();
+		if (typeof (mesh as { dispose?: () => void }).dispose === 'function') {
+			(mesh as { dispose: () => void }).dispose();
 		}
 	}
 
-	updateSettings(options) {
-		// Just update settings - existing lanes continue with old style,
-		// new lanes will use new settings
+	updateSettings(options: RendererOptions): void {
 		const themeChanged =
 			(options.hue !== undefined && options.hue !== this.hue) ||
 			(options.isDark !== undefined && options.isDark !== this.isDark);
@@ -1005,61 +980,52 @@ export class Parallax3DRenderer {
 			this.isRTL = options.isRTL;
 			if (options.isRTL) {
 				loadCanvasFont();
-				loadArabicFont(); // Load for 3D extrusion
+				loadArabicFont();
 			}
 		}
 		if (options.effect !== undefined) this.effect = options.effect;
 		if (options.texture !== undefined) this.texture = options.texture;
 		if (options.rainbow !== undefined) this.rainbow = options.rainbow;
 
-		// Update fog color when theme changes
 		if (themeChanged) {
 			this._updateFog();
 		}
 	}
 
-	getLaneCount() {
+	getLaneCount(): number {
 		return this.lanes.size;
 	}
 
-	_animate() {
+	_animate(): void {
 		if (this.disposed) return;
 
 		this.animationId = requestAnimationFrame(() => this._animate());
 
-		// Skip rendering if context lost
 		if (this.contextLost) return;
 
 		const now = performance.now();
 
-		// Physics-based camera movement
 		if (!this.isDragging) {
-			// Apply momentum when not dragging
-			const dt = 16; // Assume ~60fps frame time
-			const friction = 0.92; // Damping factor (lower = more friction)
+			const dt = 16;
+			const friction = 0.92;
 
-			// Apply velocity to rotation
 			this.rotationX += this.velocityX * dt;
 			this.rotationY += this.velocityY * dt;
 
-			// Apply friction to velocity
 			this.velocityX *= friction;
 			this.velocityY *= friction;
 
-			// Stop very small velocities to prevent drift
 			if (Math.abs(this.velocityX) < 0.00001) this.velocityX = 0;
 			if (Math.abs(this.velocityY) < 0.00001) this.velocityY = 0;
 
-			// Clamp rotation
 			const maxRotation = 0.8;
 			this.rotationX = Math.max(-maxRotation, Math.min(maxRotation, this.rotationX));
 			this.rotationY = Math.max(-maxRotation, Math.min(maxRotation, this.rotationY));
 		}
 
-		// Apply rotation to scene
 		this.scene.rotation.x = this.rotationX;
 		this.scene.rotation.y = this.rotationY;
-		const toRemove = [];
+		const toRemove: number[] = [];
 
 		for (const [id, lane] of this.lanes) {
 			const elapsed = now - lane.startTime;
@@ -1079,14 +1045,14 @@ export class Parallax3DRenderer {
 		this.renderer.render(this.scene, this.camera);
 	}
 
-	clearAllLanes() {
+	clearAllLanes(): void {
 		const laneIds = [...this.lanes.keys()];
 		for (const id of laneIds) {
 			this.removeLane(id);
 		}
 	}
 
-	dispose() {
+	dispose(): void {
 		this.disposed = true;
 
 		if (this.animationId) {
@@ -1107,11 +1073,5 @@ export class Parallax3DRenderer {
 		if (this.renderer.domElement?.parentNode) {
 			this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
 		}
-
-		// Clear references
-		this.scene = null;
-		this.camera = null;
-		this.renderer = null;
-		this.lanes = null;
 	}
 }
