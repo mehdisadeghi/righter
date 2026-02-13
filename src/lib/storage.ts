@@ -9,7 +9,7 @@ const defaultSettings: Settings = {
 	fontSize: 1.25,
 	hue: 220,
 	modeType: 'time',
-	modeValue: 30,
+	modeValue: 60,
 	physicalLayout: 'ansi',
 	errorReplace: false,
 	langOverride: '',

@@ -157,6 +157,7 @@ export class Parallax3DRenderer {
 	font: Font | null;
 	contextLost: boolean;
 	gameMode: boolean;
+	mouseFollow: boolean;
 
 	fps: number;
 	paused: boolean;
@@ -226,6 +227,7 @@ export class Parallax3DRenderer {
 		this.font = null;
 		this.contextLost = false;
 		this.gameMode = false;
+		this.mouseFollow = false;
 
 		this.fps = 0;
 		this.paused = false;
@@ -398,6 +400,20 @@ export class Parallax3DRenderer {
 	}
 
 	_onMouseMove(e: MouseEvent): void {
+		// In game mode with mouse follow, mouse controls camera direction without dragging
+		if (this.gameMode && this.mouseFollow && !this.isDragging) {
+			const deltaX = e.clientX - this.lastMouseX;
+			const deltaY = e.clientY - this.lastMouseY;
+			const sensitivity = 0.002;
+			this.rotationY -= deltaX * sensitivity;
+			this.rotationX -= deltaY * sensitivity;
+			// Clamp to avoid flipping at poles
+			this.rotationX = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.rotationX));
+			this.lastMouseX = e.clientX;
+			this.lastMouseY = e.clientY;
+			return;
+		}
+
 		if (!this.isDragging) return;
 
 		const now = performance.now();
@@ -419,6 +435,8 @@ export class Parallax3DRenderer {
 			const sensitivity = 0.003;
 			this.rotationY -= deltaX * sensitivity;
 			this.rotationX -= deltaY * sensitivity;
+			// Clamp to avoid flipping at poles
+			this.rotationX = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.rotationX));
 
 			this.velocityX = (-deltaY * sensitivity) / dt;
 			this.velocityY = (-deltaX * sensitivity) / dt;
@@ -1371,7 +1389,7 @@ export class Parallax3DRenderer {
 		e.preventDefault();
 		e.stopPropagation();
 		if (e.code === 'KeyR') {
-			this._orbitTarget.set(0, 0, 0);
+			this._resetGameView();
 			return;
 		}
 		if (e.code === 'Space') {
@@ -1460,6 +1478,16 @@ export class Parallax3DRenderer {
 		this._fly.lookVelocityY = 0;
 		this._fly.speed = 400;
 		this.camera.rotation.set(0, 0, 0, 'YXZ');
+	}
+
+	_resetGameView(): void {
+		this._orbitTarget.set(0, 0, 0);
+		this._orbitRadius = 800;
+		this.rotationX = 0;
+		this.rotationY = 0;
+		this.velocityX = 0;
+		this.velocityY = 0;
+		this._gameSpeed = 400;
 	}
 
 	showAxes(visible: boolean): void {
@@ -1566,6 +1594,8 @@ export class Parallax3DRenderer {
 
 				this.rotationX += this.velocityX * dt;
 				this.rotationY += this.velocityY * dt;
+				// Clamp to avoid flipping at poles
+				this.rotationX = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.rotationX));
 
 				this.velocityX *= friction;
 				this.velocityY *= friction;

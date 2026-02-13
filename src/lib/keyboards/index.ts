@@ -93,7 +93,7 @@ export const languageMappings: Record<string, LanguageMapping> = {
 export const keyboardGroups: KeyboardGroup[] = [
 	{
 		name: 'Latin',
-		keyboards: ['en-US', 'de-DE', 'es-ES', 'eurkey']
+		keyboards: ['en-US', 'de-DE', 'es-ES']
 	},
 	{
 		name: 'Arabic Script',

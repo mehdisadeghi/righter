@@ -77,7 +77,7 @@
 	];
 
 	let data = $state({
-		settings: { uiLanguage: 'en', keyboardLocale: 'en-US', fontSize: 1.25, hue: 220, modeType: 'time', modeValue: 30, physicalLayout: 'ansi', showTyped: false, showHands: true },
+		settings: { uiLanguage: 'en', keyboardLocale: 'en-US', fontSize: 1.25, hue: 220, modeType: 'time', modeValue: 60, physicalLayout: 'ansi', showTyped: false, showHands: true, eurkey: false },
 		history: [],
 		customTexts: { fa: '', en: '' }
 	});
@@ -109,9 +109,9 @@
 	let webglAvailable = $state(false);
 
 	// Debug panel (checkbox persisted, all other debug state is runtime-only)
-	let debugPanel = $derived(data.settings.debugPanel === true);
 	let debugHideUI = $state(false);
 	let debugGame = $state(false);
+	let debugMouseFollow = $state(false);
 	let debugNoFog = $state(false);
 	let debugPaused = $state(false);
 	let debugSpeedMult = $state(1.0);
@@ -264,8 +264,10 @@
 
 	let keyboardLocale = $derived(data.settings.keyboardLocale || 'en-US');
 	let physicalLayout = $derived(data.settings.physicalLayout || 'ansi');
+	let eurkey = $derived(data.settings.eurkey === true);
+	let effectiveLocale = $derived(eurkey ? 'eurkey' : keyboardLocale);
 	let modeType = $derived(data.settings.modeType || 'time');
-	let modeValue = $derived(data.settings.modeValue || 30);
+	let modeValue = $derived(data.settings.modeValue || 60);
 	let errorReplace = $derived(data.settings.errorReplace || false);
 	let parallax = $derived(data.settings.parallax !== false);
 	let parallaxIntensity = $derived(data.settings.parallaxIntensity ?? 1.5);
@@ -275,8 +277,8 @@
 	let parallax3dTexture = $derived(data.settings.parallax3dTexture || 'solid');
 	let parallax3dRainbow = $derived(data.settings.parallax3dRainbow === true);
 	let dotPattern = $derived(data.settings.dotPattern !== false);
-	let keyboard = $derived(buildKeyboard(physicalLayout, keyboardLocale));
-	let keyboardMapping = $derived(languageMappings[keyboardLocale]);
+	let keyboard = $derived(buildKeyboard(physicalLayout, effectiveLocale));
+	let keyboardMapping = $derived(languageMappings[effectiveLocale]);
 
 	// Relay settings (used for both Nostr and WebRTC signaling)
 	let nostrRelays = $derived(data.settings.nostrRelays || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']);
@@ -294,7 +296,6 @@
 		'de-DE': 'de',
 		'es-ES': 'es',
 		'fa-IR': 'fa',
-		'eurkey': 'en',
 		'ar': 'ar',
 		'ur-PK': 'ur',
 		'ps-AF': 'ps',
@@ -1702,20 +1703,20 @@
 	$effect(() => {
 		if (parallax3dRenderer) {
 			parallax3dRenderer.updateSettings({
-				intensity: debugPanel && debugIntensity !== null ? debugIntensity : parallaxIntensity,
+				intensity: debugIntensity !== null ? debugIntensity : parallaxIntensity,
 				hue: data.settings.hue,
 				isDark: darkMode,
 				isRTL: textDir === 'rtl',
-				effect: (debugPanel && debugEffect !== null ? debugEffect : parallax3dEffect) as 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon' | 'random',
-				texture: (debugPanel && debugTexture !== null ? debugTexture : parallax3dTexture) as 'solid' | 'gradient' | 'metallic' | 'glass' | 'random',
-				rainbow: debugPanel && debugRainbow !== null ? debugRainbow : parallax3dRainbow
+				effect: (debugEffect !== null ? debugEffect : parallax3dEffect) as 'none' | 'outline' | 'shadow' | 'emboss' | 'extrude' | 'neon' | 'random',
+				texture: (debugTexture !== null ? debugTexture : parallax3dTexture) as 'solid' | 'gradient' | 'metallic' | 'glass' | 'random',
+				rainbow: debugRainbow !== null ? debugRainbow : parallax3dRainbow
 			});
 		}
 	});
 
 	// Debug panel: poll stats
 	$effect(() => {
-		if (debugPanel && parallax3dRenderer) {
+		if (parallax3dRenderer) {
 			debugPollTimer = setInterval(() => {
 				if (parallax3dRenderer) {
 					debugInfo = parallax3dRenderer.getDebugStats();
@@ -1754,6 +1755,12 @@
 	$effect(() => {
 		if (parallax3dRenderer) {
 			parallax3dRenderer.setGameMode(debugHideUI);
+		}
+	});
+
+	$effect(() => {
+		if (parallax3dRenderer) {
+			parallax3dRenderer.mouseFollow = debugMouseFollow;
 		}
 	});
 
@@ -1813,9 +1820,9 @@
 		}
 	});
 
-	// Debug panel: reset on close
+	// Debug panel: reset when 3D is disabled
 	$effect(() => {
-		if (!debugPanel) {
+		if (!parallax3d) {
 			debugPaused = false;
 			debugSpeedMult = 1.0;
 			debugExtrudeMult = 0.1;
@@ -1825,6 +1832,7 @@
 			debugRainbow = null;
 			debugHideUI = false;
 			debugGame = false;
+			debugMouseFollow = false;
 			debugNoFog = false;
 			debugAxes = false;
 			debugLights = true;
@@ -2083,15 +2091,6 @@
 						/>
 					</label>
 
-					<label class="setting-item">
-						<span class="setting-label">{tr('parallax')}</span>
-						<input
-							type="checkbox"
-							checked={parallax}
-							onchange={(e) => changeSetting('parallax', e.target.checked)}
-						/>
-					</label>
-
 					<label class="setting-item" title="Show finger hints on keyboard">
 						<span class="setting-label">{tr('showHands')}</span>
 						<input
@@ -2100,82 +2099,6 @@
 							onchange={(e) => changeSetting('showHands', e.target.checked)}
 						/>
 					</label>
-
-					{#if parallax}
-					{#if webglAvailable}
-					<label class="setting-item" title="Use WebGL 3D rendering">
-						<span class="setting-label">{tr('parallax3d')}</span>
-						<input
-							type="checkbox"
-							checked={parallax3d}
-							onchange={(e) => changeSetting('parallax3d', e.target.checked)}
-						/>
-					</label>
-					{#if parallax3d}
-					<label class="setting-item" title="3D text effect">
-						<span class="setting-label">{tr('parallax3dEffect')}</span>
-						<select
-							class="setting-select"
-							value={parallax3dEffect}
-							onchange={(e) => changeSetting('parallax3dEffect', e.target.value)}
-						>
-							<option value="none">{tr('effect_none')}</option>
-							<option value="outline">{tr('effect_outline')}</option>
-							<option value="shadow">{tr('effect_shadow')}</option>
-							<option value="emboss">{tr('effect_emboss')}</option>
-							<option value="extrude">{tr('effect_extrude')}</option>
-							<option value="neon">{tr('effect_neon')}</option>
-						</select>
-					</label>
-
-					<label class="setting-item" title="Text texture style">
-						<span class="setting-label">{tr('parallax3dTexture')}</span>
-						<select
-							class="setting-select"
-							value={parallax3dTexture}
-							onchange={(e) => changeSetting('parallax3dTexture', e.target.value)}
-						>
-							<option value="solid">{tr('texture_solid')}</option>
-							<option value="gradient">{tr('texture_gradient')}</option>
-							<option value="metallic">{tr('texture_metallic')}</option>
-							<option value="glass">{tr('texture_glass')}</option>
-						</select>
-					</label>
-
-					<label class="setting-item" title="Rainbow colors for each letter">
-						<span class="setting-label">{tr('rainbow')}</span>
-						<input
-							type="checkbox"
-							checked={parallax3dRainbow}
-							onchange={(e) => changeSetting('parallax3dRainbow', e.target.checked)}
-						/>
-					</label>
-
-					<label class="setting-item" title="Debug panel">
-						<span class="setting-label">Debug</span>
-						<input
-							type="checkbox"
-							checked={debugPanel}
-							onchange={(e) => changeSetting('debugPanel', e.target.checked)}
-						/>
-					</label>
-					{/if}
-					{/if}
-
-					<label class="setting-item" title={tr('intensity')}>
-						<span class="setting-label">{tr('intensity')}</span>
-						<input
-							type="range"
-							min="0.5"
-							max="3"
-							step="0.25"
-							value={parallaxIntensity}
-							oninput={(e) => changeSetting('parallaxIntensity', parseFloat(e.target.value))}
-						/>
-						<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
-					</label>
-
-					{/if}
 
 					<label class="setting-item">
 						<span class="setting-label">{tr('dotPattern')}</span>
@@ -2199,6 +2122,88 @@
 							{/each}
 						</select>
 					</label>
+
+					<label class="setting-item" title="EurKey layout">
+						<span class="setting-label">EurKey</span>
+						<input
+							type="checkbox"
+							checked={eurkey}
+							onchange={(e) => changeSetting('eurkey', e.target.checked)}
+						/>
+					</label>
+
+					<div class="setting-group">
+						<label class="setting-item">
+							<span class="setting-label">{tr('parallax')}</span>
+							<input
+								type="checkbox"
+								checked={parallax}
+								onchange={(e) => changeSetting('parallax', e.target.checked)}
+							/>
+						</label>
+						{#if parallax}
+						<label class="setting-item" title={tr('intensity')}>
+							<span class="setting-label">{tr('intensity')}</span>
+							<input
+								type="range"
+								min="0.5"
+								max="3"
+								step="0.25"
+								value={parallaxIntensity}
+								oninput={(e) => changeSetting('parallaxIntensity', parseFloat(e.target.value))}
+							/>
+							<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
+						</label>
+						{#if webglAvailable}
+						<label class="setting-item" title="Use WebGL 3D rendering">
+							<span class="setting-label">{tr('parallax3d')}</span>
+							<input
+								type="checkbox"
+								checked={parallax3d}
+								onchange={(e) => changeSetting('parallax3d', e.target.checked)}
+							/>
+						</label>
+						{#if parallax3d}
+						<label class="setting-item" title="3D text effect">
+							<span class="setting-label">{tr('parallax3dEffect')}</span>
+							<select
+								class="setting-select"
+								value={parallax3dEffect}
+								onchange={(e) => changeSetting('parallax3dEffect', e.target.value)}
+							>
+								<option value="none">{tr('effect_none')}</option>
+								<option value="outline">{tr('effect_outline')}</option>
+								<option value="shadow">{tr('effect_shadow')}</option>
+								<option value="emboss">{tr('effect_emboss')}</option>
+								<option value="extrude">{tr('effect_extrude')}</option>
+								<option value="neon">{tr('effect_neon')}</option>
+							</select>
+						</label>
+						<label class="setting-item" title="Text texture style">
+							<span class="setting-label">{tr('parallax3dTexture')}</span>
+							<select
+								class="setting-select"
+								value={parallax3dTexture}
+								onchange={(e) => changeSetting('parallax3dTexture', e.target.value)}
+							>
+								<option value="solid">{tr('texture_solid')}</option>
+								<option value="gradient">{tr('texture_gradient')}</option>
+								<option value="metallic">{tr('texture_metallic')}</option>
+								<option value="glass">{tr('texture_glass')}</option>
+							</select>
+						</label>
+						<label class="setting-item" title="Rainbow colors for each letter">
+							<span class="setting-label">{tr('rainbow')}</span>
+							<input
+								type="checkbox"
+								checked={parallax3dRainbow}
+								onchange={(e) => changeSetting('parallax3dRainbow', e.target.checked)}
+							/>
+						</label>
+						{/if}
+						{/if}
+						{/if}
+					</div>
 				</div>
 
 				<label class="setting-item setting-vertical">
@@ -2275,9 +2280,13 @@
 						</p>
 						<p>
 							{tr('textsFrom')}
-							<a href="https://github.com/mehdisadeghi" target="_blank" rel="noopener">Mehdi Sadeghi</a> (FA),
+							<a href="https://en.wikipedia.org/wiki/Omar_Khayyam" target="_blank" rel="noopener">Omar Khayyam</a> (FA),
 							<a href="https://www.okonlife.com/poems/" target="_blank" rel="noopener">Shahriar Shahriari</a> (EN),
 							Unknown (DE)
+						</p>
+						<p>
+							{tr('createdBy')}
+							<a href="https://mehdix.ir" target="_blank" rel="noopener">Mehdi Sadeghi</a>
 						</p>
 						<p>
 							{tr('madeWith')}
@@ -2598,7 +2607,7 @@
 	<div class="build-date">{__BUILD_DATE__}</div>
 </div>
 
-{#if debugPanel && parallax3dRenderer}
+{#if parallax3dRenderer}
 <div class="debug-panel">
 	<div class="debug-stats">
 		<span>FPS: {debugInfo.fps}</span>
@@ -2647,6 +2656,10 @@
 			</label>
 		{/if}
 		<label class="debug-control">
+			Mouse follow
+			<input type="checkbox" bind:checked={debugMouseFollow} />
+		</label>
+		<label class="debug-control">
 			Falling
 			<input type="checkbox"
 				checked={debugFallingText}
@@ -2688,7 +2701,7 @@
 			Hide UI
 			<input type="checkbox"
 				checked={debugHideUI}
-				onchange={(e) => { debugHideUI = e.target.checked; if (!e.target.checked) debugGame = false; }}
+				onchange={(e) => { debugHideUI = e.target.checked; if (!e.target.checked) { debugGame = false; debugMouseFollow = false; } }}
 			/>
 		</label>
 		<label class="debug-control">
