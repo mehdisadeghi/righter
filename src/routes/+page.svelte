@@ -2285,7 +2285,7 @@
 						</p>
 						<p>
 							{tr('createdBy')}
-							<a href="https://mehdix.ir" target="_blank" rel="noopener">Mehdi Sadeghi</a>
+							<a href="https://mehdix.ir" target="_blank" rel="noopener">mehdix</a>
 						</p>
 						<p>
 							{tr('madeWith')}
@@ -2603,7 +2603,7 @@
 		{/if}
 	</details>
 
-	<div class="build-date">{__BUILD_DATE__}</div>
+	<div class="build-date">v{__VERSION__}{__GIT_HASH__ ? `@${__GIT_HASH__}` : ''}<br/>{__BUILD_DATE__}</div>
 </div>
 
 {#if parallax3dRenderer}

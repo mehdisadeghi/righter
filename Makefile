@@ -1,4 +1,4 @@
-.PHONY: install dev build preview clean fmt deploy help
+.PHONY: install dev build preview clean fmt deploy bump help
 
 BUN := ~/.bun/bin/bun
 
@@ -12,6 +12,7 @@ help:
 	@echo "  make preview   Preview production build"
 	@echo "  make fmt       Format code (Svelte/JS/HTML/CSS)"
 	@echo "  make deploy    Build and deploy to Cloudflare Pages"
+	@echo "  make bump      Bump patch version"
 	@echo "  make clean     Remove build artifacts"
 	@echo ""
 
@@ -35,3 +36,7 @@ clean:
 
 deploy: build
 	$(BUN) x wrangler pages deploy build --project-name=righter
+
+bump:
+	npm version patch --no-git-tag-version
+	@echo "Version bumped to $$(jq -r .version package.json)"

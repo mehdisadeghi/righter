@@ -1257,13 +1257,11 @@ body {
 /* Build date footer */
 
 .build-date {
-	flex-grow: 1;
-	display: flex;
-	align-items: flex-end;
-	justify-content: center;
-	min-height: 0;
+	margin-top: auto;
+	padding-bottom: 0.5rem;
+	text-align: center;
 	font-size: 0.625rem;
-	line-height: 1;
+	line-height: 1.4;
 	color: var(--text-muted);
 	opacity: 0.4;
 	font-family: ui-monospace, monospace;
