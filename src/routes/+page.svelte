@@ -101,7 +101,7 @@
 	let laneIdCounter = $state(0);
 	let lastSpawnedLineIndex = $state(-1);
 	let laneSpawnInterval = $state(null);
-	const LANE_POOL_SIZE = 15;
+	const LANE_POOL_SIZE = 10;
 
 	// Three.js 3D parallax renderer
 	let parallax3dRenderer = $state(null);
@@ -120,8 +120,8 @@
 	let debugEffect: string | null = $state(null);
 	let debugTexture: string | null = $state('solid');
 	let debugRainbow: boolean | null = $state(null);
-	let debugAxes = $state(true);
-	let debugLights = $state(true);
+	let debugAxes = $state(false);
+	let debugLights = $state(false);
 	let debugLightIntensity = $state(1.0);
 	let debugFallingText = $state(false);
 	let invaderScore = $state(0);
@@ -1721,7 +1721,7 @@
 				if (parallax3dRenderer) {
 					debugInfo = parallax3dRenderer.getDebugStats();
 				}
-			}, 250);
+			}, 500);
 		} else if (debugPollTimer) {
 			clearInterval(debugPollTimer);
 			debugPollTimer = null;
@@ -1835,7 +1835,7 @@
 			debugMouseFollow = false;
 			debugNoFog = false;
 			debugAxes = false;
-			debugLights = true;
+			debugLights = false;
 			debugLightIntensity = 1.0;
 			debugFallingText = false;
 			invaderScore = 0;
@@ -2141,8 +2141,7 @@
 								onchange={(e) => changeSetting('parallax', e.target.checked)}
 							/>
 						</label>
-						{#if parallax}
-						<label class="setting-item" title={tr('intensity')}>
+						<label class="setting-item" class:setting-disabled={!parallax} title={tr('intensity')}>
 							<span class="setting-label">{tr('intensity')}</span>
 							<input
 								type="range"
@@ -2151,25 +2150,26 @@
 								step="0.25"
 								value={parallaxIntensity}
 								oninput={(e) => changeSetting('parallaxIntensity', parseFloat(e.target.value))}
+								disabled={!parallax}
 							/>
 							<span class="setting-value">{parallaxIntensity.toFixed(1)}x</span>
 						</label>
-						{#if webglAvailable}
-						<label class="setting-item" title="Use WebGL 3D rendering">
+						<label class="setting-item" class:setting-disabled={!parallax || !webglAvailable} title="Use WebGL 3D rendering">
 							<span class="setting-label">{tr('parallax3d')}</span>
 							<input
 								type="checkbox"
 								checked={parallax3d}
 								onchange={(e) => changeSetting('parallax3d', e.target.checked)}
+								disabled={!parallax || !webglAvailable}
 							/>
 						</label>
-						{#if parallax3d}
-						<label class="setting-item" title="3D text effect">
+						<label class="setting-item" class:setting-disabled={!parallax3d || !parallax} title="3D text effect">
 							<span class="setting-label">{tr('parallax3dEffect')}</span>
 							<select
 								class="setting-select"
 								value={parallax3dEffect}
 								onchange={(e) => changeSetting('parallax3dEffect', e.target.value)}
+								disabled={!parallax3d || !parallax}
 							>
 								<option value="none">{tr('effect_none')}</option>
 								<option value="outline">{tr('effect_outline')}</option>
@@ -2179,12 +2179,13 @@
 								<option value="neon">{tr('effect_neon')}</option>
 							</select>
 						</label>
-						<label class="setting-item" title="Text texture style">
+						<label class="setting-item" class:setting-disabled={!parallax3d || !parallax} title="Text texture style">
 							<span class="setting-label">{tr('parallax3dTexture')}</span>
 							<select
 								class="setting-select"
 								value={parallax3dTexture}
 								onchange={(e) => changeSetting('parallax3dTexture', e.target.value)}
+								disabled={!parallax3d || !parallax}
 							>
 								<option value="solid">{tr('texture_solid')}</option>
 								<option value="gradient">{tr('texture_gradient')}</option>
@@ -2192,17 +2193,15 @@
 								<option value="glass">{tr('texture_glass')}</option>
 							</select>
 						</label>
-						<label class="setting-item" title="Rainbow colors for each letter">
+						<label class="setting-item" class:setting-disabled={!parallax3d || !parallax} title="Rainbow colors for each letter">
 							<span class="setting-label">{tr('rainbow')}</span>
 							<input
 								type="checkbox"
 								checked={parallax3dRainbow}
 								onchange={(e) => changeSetting('parallax3dRainbow', e.target.checked)}
+								disabled={!parallax3d || !parallax}
 							/>
 						</label>
-						{/if}
-						{/if}
-						{/if}
 					</div>
 				</div>
 
@@ -2280,7 +2279,7 @@
 						</p>
 						<p>
 							{tr('textsFrom')}
-							<a href="https://en.wikipedia.org/wiki/Omar_Khayyam" target="_blank" rel="noopener">Omar Khayyam</a> (FA),
+							<a href="https://en.wikipedia.org/wiki/Omar_Khayyam" target="_blank" rel="noopener">Omar Khayyam</a> (<a href="https://github.com/mehdisadeghi/khayyam" target="_blank" rel="noopener">FA</a>),
 							<a href="https://www.okonlife.com/poems/" target="_blank" rel="noopener">Shahriar Shahriari</a> (EN),
 							Unknown (DE)
 						</p>
@@ -2613,13 +2612,9 @@
 		<span>FPS: {debugInfo.fps}</span>
 		<span>Lanes: {debugInfo.laneCount}</span>
 		<span title={debugInfo.rendererInfo}>{debugInfo.rendererInfo.length > 28 ? debugInfo.rendererInfo.slice(0, 28) + '...' : debugInfo.rendererInfo}</span>
-		{#if debugInfo.flySpeed !== undefined}
-			<span>Fly: {debugInfo.flySpeed} u/s</span>
-			<span title={debugInfo.cameraPos}>Pos: {debugInfo.cameraPos}</span>
-		{/if}
-		{#if debugInfo.invaderScore !== undefined}
-			<span>Score: {debugInfo.invaderScore}</span>
-		{/if}
+		<span class:debug-disabled={debugInfo.flySpeed === undefined}>Speed: {debugInfo.flySpeed ?? '-'}</span>
+		<span class:debug-disabled={debugInfo.cameraPos === undefined} title={debugInfo.cameraPos ?? ''}>Pos: {debugInfo.cameraPos ?? '-'}</span>
+		<span class:debug-disabled={debugInfo.invaderScore === undefined}>Score: {debugInfo.invaderScore ?? '-'}</span>
 	</div>
 	<div class="debug-controls">
 		<label class="debug-control">
@@ -2646,15 +2641,13 @@
 		<button class="debug-btn" disabled={!debugHideUI} onclick={() => { debugGame = !debugGame; }}>
 			{debugGame ? 'Game on' : 'Game off'}
 		</button>
-		{#if debugGame && debugHideUI}
-			<label class="debug-control">
-				Hit
-				<select class="debug-select" bind:value={invaderHitEffect}>
-					<option value="oblivion">oblivion</option>
-					<option value="explode">explode</option>
-				</select>
-			</label>
-		{/if}
+		<label class="debug-control" class:debug-disabled={!(debugGame && debugHideUI)}>
+			Hit
+			<select class="debug-select" bind:value={invaderHitEffect} disabled={!(debugGame && debugHideUI)}>
+				<option value="oblivion">oblivion</option>
+				<option value="explode">explode</option>
+			</select>
+		</label>
 		<label class="debug-control">
 			Mouse follow
 			<input type="checkbox" bind:checked={debugMouseFollow} />
@@ -2681,15 +2674,14 @@
 			Lights
 			<input type="checkbox" bind:checked={debugLights} />
 		</label>
-		{#if debugLights}
-		<label class="debug-control">
+		<label class="debug-control" class:debug-disabled={!debugLights}>
 			L.Int
 			<input type="range" min="0" max="3" step="0.1"
 				bind:value={debugLightIntensity}
+				disabled={!debugLights}
 			/>
 			{debugLightIntensity.toFixed(1)}
 		</label>
-		{/if}
 		<label class="debug-control">
 			No fog
 			<input type="checkbox"

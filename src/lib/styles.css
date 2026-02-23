@@ -428,6 +428,15 @@ body {
 	cursor: pointer;
 }
 
+.setting-disabled {
+	opacity: 0.4;
+}
+
+.setting-disabled input,
+.setting-disabled select {
+	cursor: default;
+}
+
 /* Credits */
 
 .credits {
@@ -1377,6 +1386,16 @@ body {
 
 .debug-btn:disabled {
 	opacity: 0.35;
+	cursor: default;
+}
+
+.debug-disabled {
+	opacity: 0.35;
+	pointer-events: none;
+}
+
+.debug-control.debug-disabled input,
+.debug-control.debug-disabled select {
 	cursor: default;
 }
 

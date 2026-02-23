@@ -1,4 +1,4 @@
-.PHONY: install dev build preview clean fmt help
+.PHONY: install dev build preview clean fmt deploy help
 
 BUN := ~/.bun/bin/bun
 
@@ -11,6 +11,7 @@ help:
 	@echo "  make build [BASE=/path]  Build for production (BASE for subpath hosting)"
 	@echo "  make preview   Preview production build"
 	@echo "  make fmt       Format code (Svelte/JS/HTML/CSS)"
+	@echo "  make deploy    Build and deploy to Cloudflare Pages"
 	@echo "  make clean     Remove build artifacts"
 	@echo ""
 
@@ -31,3 +32,6 @@ fmt:
 
 clean:
 	rm -rf build .svelte-kit node_modules/.vite
+
+deploy: build
+	$(BUN) x wrangler pages deploy build --project-name=righter

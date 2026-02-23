@@ -174,6 +174,8 @@ export class Parallax3DRenderer {
 	private _pauseStartTime: number;
 	private _debugOverrides: DebugOverrides;
 	private _axesGroup: Group | null;
+	private _tempMove: Vector3;
+	private _toRemove: number[];
 	onScoreChange: ((score: number) => void) | null;
 	onInvaderStatsChange: ((stats: import('./game.js').InvaderStats) => void) | null;
 	onInvaderExit: (() => void) | null;
@@ -244,6 +246,8 @@ export class Parallax3DRenderer {
 		this._pauseStartTime = 0;
 		this._debugOverrides = { speedMultiplier: 1, extrudeMultiplier: 0.1 };
 		this._axesGroup = null;
+		this._tempMove = new Vector3();
+		this._toRemove = [];
 		this._debugLightGroup = null;
 		this._debugSpot = null;
 		this.onScoreChange = null;
@@ -314,7 +318,7 @@ export class Parallax3DRenderer {
 		this.camera.position.z = 800;
 
 		this.renderer = new WebGLRenderer({
-			antialias: true,
+			antialias: false,
 			alpha: true,
 			powerPreference: 'high-performance'
 		});
@@ -327,6 +331,7 @@ export class Parallax3DRenderer {
 		this.renderer.domElement.style.inset = '0';
 		this.renderer.domElement.style.zIndex = '-1';
 		this.renderer.domElement.style.pointerEvents = 'none';
+		this.renderer.domElement.style.willChange = 'transform';
 
 		this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
 			console.debug('WebGL: context lost');
@@ -714,8 +719,8 @@ export class Parallax3DRenderer {
 		group.userData.isTroikaGroup = true;
 		group.userData.textMeshes = [];
 
-		const depthLayers = 10;
-		const depthStep = fontSize * 0.25 * this._debugOverrides.extrudeMultiplier;
+		const depthLayers = 3;
+		const depthStep = fontSize * 0.8 * this._debugOverrides.extrudeMultiplier;
 
 		for (let i = 0; i < depthLayers; i++) {
 			const textMesh = new Text();
@@ -1276,8 +1281,8 @@ export class Parallax3DRenderer {
 			spot.penumbra = 0.3;
 			spot.decay = 0.2;
 			spot.castShadow = true;
-			spot.shadow.mapSize.width = 2048;
-			spot.shadow.mapSize.height = 2048;
+			spot.shadow.mapSize.width = 1024;
+			spot.shadow.mapSize.height = 1024;
 			spot.shadow.camera.near = 100;
 			spot.shadow.camera.far = 4000;
 			spot.target.position.set(0, 0, 0);
@@ -1410,7 +1415,7 @@ export class Parallax3DRenderer {
 
 	_updateFlyMovement(dt: number): void {
 		const fly = this._fly!;
-		const move = new Vector3(0, 0, 0);
+		const move = this._tempMove.set(0, 0, 0);
 
 		if (fly.keysHeld.has('KeyW')) move.z -= 1;
 		if (fly.keysHeld.has('KeyS')) move.z += 1;
@@ -1589,11 +1594,11 @@ export class Parallax3DRenderer {
 			}
 		} else {
 			if (!this.isDragging) {
-				const dt = 16;
-				const friction = 0.92;
+				const dtMs = flyDt * 1000;
+				const friction = Math.pow(0.92, flyDt * 60);
 
-				this.rotationX += this.velocityX * dt;
-				this.rotationY += this.velocityY * dt;
+				this.rotationX += this.velocityX * dtMs;
+				this.rotationY += this.velocityY * dtMs;
 				// Clamp to avoid flipping at poles
 				this.rotationX = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.rotationX));
 
@@ -1606,7 +1611,7 @@ export class Parallax3DRenderer {
 
 			// WASD movement in game mode: shift the orbit target
 			if (this.gameMode && this._gameKeysHeld.size > 0) {
-				const move = new Vector3(0, 0, 0);
+				const move = this._tempMove.set(0, 0, 0);
 				const speed = this._gameSpeed * flyDt;
 				if (this._gameKeysHeld.has('KeyW')) move.z -= 1;
 				if (this._gameKeysHeld.has('KeyS')) move.z += 1;
@@ -1640,21 +1645,21 @@ export class Parallax3DRenderer {
 		}
 
 		if (!this.paused) {
-			const toRemove: number[] = [];
+			this._toRemove.length = 0;
 
 			for (const [id, lane] of this.lanes) {
 				const elapsed = now - lane.startTime;
 				const progress = elapsed / lane.duration;
 
 				if (progress >= 1) {
-					toRemove.push(id);
+					this._toRemove.push(id);
 				} else {
 					lane.mesh.position.x = lane.startX + (lane.endX - lane.startX) * progress;
 					lane.mesh.position.y = lane.startY + (lane.endY - lane.startY) * progress;
 				}
 			}
 
-			for (const id of toRemove) {
+			for (const id of this._toRemove) {
 				this.removeLane(id);
 			}
 		}
