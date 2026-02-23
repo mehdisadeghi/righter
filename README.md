@@ -1,47 +1,55 @@
 # Righter
 
-A minimalist touch typing web game. Browser-only, single user, text-based.
+A touch typing web game with RTL support. Uses Khayyam quatrains in supported languages.
+
+This work is entirely generated as an experiment by commanding Claude Code in a span of few weeks.
+Technical and UX choices are mine, implementation details are done by Claude Code, and not thoroughly reviewed.
+
 
 ## Features
-
-- RTL/LTR support (Persian and English)
+- RTL/LTR support (picks up browser's language by default)
 - Live typing metrics (WPM, accuracy, time, characters)
 - Monochromatic color scheme with customizable hue
-- Adjustable font size
-- Custom text input
 - Race history with localStorage persistence
 - JSON export/import for all data
-- Khayyam quatrains for Persian typing
-- Mindfulness quotes for English typing
+- Very experimental Nostr-based multiplayer mode (works only if you're on the same relay)
 
-## Usage
+
+## How to Run
+
+Visit [righter.uk](https://righter.uk) or run locally:
 
 ```sh
-make install   # Install dependencies
-make dev       # Start development server
-make build     # Build for production
-make preview   # Preview production build
+make dev       # Start dev server
 ```
 
-## Requirements
+Then start typing. 
 
-- [Bun](https://bun.sh/) runtime
+Requires [Bun](https://bun.sh/).
 
-## Structure
+## How to Play
 
-```
-src/
-  lib/
-    i18n.js       # Internationalization
-    storage.js    # localStorage utilities
-    styles.css    # Global styles (HSL-based)
-    texts.js      # Text collections by language/difficulty
-  routes/
-    +layout.js    # Prerender config
-    +layout.svelte
-    +page.svelte  # Main app
-```
+Open the web page and start typing. Esc will reset the text. Input text changes based on the selected
+language. You can switch between ISO/ASCII layouts. Check out the settings panel for font and UI settings.
+
+## Credits
+Omar Khayyam (1048-1131), Persian poet and polymath.
+Built with Svelte 5, SvelteKit, Three.js, Troika, opentype.js, nostr-tools, Yjs
+Fonts: Vazirmatn (Saber Rastikerdar), Helvetiker (Three.js)
+Texts: Omar Khayyam (FA), Shahriar Shahriari (EN), Unknown (DE)
+
+Inspired by https://play.typeracer.com/
+
+## Known Issues
+
+- Safari: Arabic/Persian letters may appear disconnected when highlighted for typing errors.
+- Performance: Disable 3D background in settings if experiencing lag.
+
+## Maintenance
+
+The work is not meant to be maintained, unless reviewed throughly which I don't have time for it.
+
 
 ## License
 
-MIT
+Righter by Mehdi Sadeghi is marked CC0 1.0. To view a copy of this mark, visit https://creativecommons.org/publicdomain/zero/1.0/

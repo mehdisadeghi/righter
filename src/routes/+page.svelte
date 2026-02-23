@@ -2286,6 +2286,7 @@
 						<p>
 							{tr('createdBy')}
 							<a href="https://mehdix.ir" target="_blank" rel="noopener">mehdix</a>
+							(<a href="https://github.com/mehdisadeghi/righter" target="_blank" rel="noopener">source</a>)
 						</p>
 						<p>
 							{tr('madeWith')}

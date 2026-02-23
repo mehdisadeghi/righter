@@ -23,7 +23,7 @@ A minimalist touch typing web game targeting RTL users (Persian) while remaining
 
 ### Text Content
 - Persian: Khayyam's quatrains from github.com/mehdisadeghi
-- English: Public domain quotes about peace, mindfulness, solitude (non-political, non-religious, thought-provoking, simple)
+- English/German: Khayyam quatrains, human translations by Shahriar Shahriari
 
 ### UI/UX Design
 - Minimalist single-page design
